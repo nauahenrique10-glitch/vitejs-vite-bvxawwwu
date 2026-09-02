@@ -5198,3 +5198,432 @@ tbody td {
   }
 }
 
+
+/* =========================================================
+   MOBILE 3.0 — OTIMIZAÇÃO RESPONSIVA COMPLETA
+   Mantém o desktop intacto e reorganiza a experiência
+   para celulares e telas estreitas.
+   ========================================================= */
+
+@media (max-width: 700px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  body {
+    background: #f5f6f8;
+  }
+
+  .app {
+    display: block;
+    width: 100%;
+    min-height: 100dvh;
+  }
+
+  /* Cabeçalho/menu vira uma faixa compacta no topo */
+  .sidebar {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-height: none;
+    padding: 12px 12px 10px;
+    border-radius: 0 0 18px 18px;
+    box-shadow: 0 10px 28px rgba(50, 16, 79, 0.18);
+    overflow: visible;
+    z-index: 20;
+  }
+
+  .brand-area {
+    gap: 10px;
+    margin: 0 0 10px;
+  }
+
+  .brand-logo {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    border-radius: 10px;
+  }
+
+  .brand-area h1 {
+    font-size: 16px;
+    line-height: 1.15;
+    margin-bottom: 2px;
+  }
+
+  .brand-area span {
+    font-size: 11px;
+  }
+
+  /* Cartão do usuário conectado fica mais discreto */
+  .sidebar > div:nth-child(2) {
+    margin: 0 0 10px !important;
+    padding: 8px 10px !important;
+  }
+
+  /* Grupos viram trilhas horizontais de navegação */
+  .menu-group-title {
+    margin: 11px 2px 6px;
+    font-size: 9px;
+    letter-spacing: 1.15px;
+  }
+
+  .menu {
+    display: flex;
+    flex-direction: row;
+    gap: 7px;
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 1px 0 7px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .menu::-webkit-scrollbar {
+    display: none;
+  }
+
+  .menu button {
+    flex: 0 0 auto;
+    min-height: 42px;
+    padding: 9px 12px;
+    gap: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.055);
+    border-radius: 11px;
+    font-size: 12px;
+    line-height: 1.15;
+    white-space: nowrap;
+    scroll-snap-align: start;
+  }
+
+  .menu button.active {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+
+  .menu-icon {
+    width: auto;
+    min-width: 20px;
+    font-size: 14px;
+  }
+
+  .totem-menu-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+
+  .totem-menu-area button,
+  .totem-menu-button {
+    margin-top: 0 !important;
+    min-height: 42px;
+    padding: 9px 10px !important;
+    border-radius: 10px !important;
+    font-size: 11px !important;
+  }
+
+  /* Conteúdo ocupa toda a largura útil */
+  .content {
+    width: 100%;
+    min-width: 0;
+    padding: 15px 12px 30px;
+  }
+
+  .page-header {
+    display: block;
+    margin-bottom: 16px;
+  }
+
+  .page-header > * + * {
+    margin-top: 10px;
+  }
+
+  .page-title {
+    font-size: clamp(22px, 7vw, 27px);
+    line-height: 1.13;
+    margin-bottom: 6px;
+    overflow-wrap: anywhere;
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  /* Grades principais nunca espremem cards */
+  .cards,
+  .dashboard-grid,
+  .dashboard-secondary-grid,
+  .form-grid,
+  .profile-grid,
+  .settings-grid,
+  .stats-grid,
+  .report-grid,
+  .calendar-summary-grid,
+  .daily-detail-summary,
+  .fortnight-stats,
+  .closing-detail-grid,
+  .payment-summary-grid,
+  .operation-grid,
+  .employee-detail-grid,
+  .pix-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 11px !important;
+  }
+
+  .card,
+  .panel {
+    min-width: 0;
+    border-radius: 14px;
+  }
+
+  .card {
+    padding: 15px;
+  }
+
+  .panel {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .panel h2,
+  .panel-heading h2 {
+    font-size: 18px;
+    line-height: 1.2;
+  }
+
+  /* Formulários pensados para toque */
+  .form-group,
+  .filter-field {
+    min-width: 0;
+  }
+
+  .form-group input,
+  .form-group select,
+  .form-group textarea,
+  .filter-field input,
+  .filter-field select,
+  .employee-search-box input,
+  input,
+  select,
+  textarea {
+    width: 100%;
+    max-width: 100%;
+    min-height: 44px;
+    font-size: 16px !important; /* evita zoom automático no iPhone */
+  }
+
+  textarea {
+    min-height: 96px;
+  }
+
+  button,
+  .primary-button,
+  .secondary-button,
+  .action-button,
+  .pix-button,
+  .payment-confirm-button,
+  .clear-filter-button {
+    min-height: 42px;
+    touch-action: manipulation;
+  }
+
+  /* Barras de filtros e ações quebram sem vazar */
+  .filters,
+  .filter-row,
+  .panel-heading,
+  .table-header,
+  .employee-search-box,
+  .payment-header,
+  .actions-row,
+  .button-row {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .filters > *,
+  .filter-row > *,
+  .actions-row > *,
+  .button-row > * {
+    max-width: 100%;
+  }
+
+  /* Tabelas continuam completas, mas rolam dentro do próprio bloco */
+  .table-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 12px;
+  }
+
+  .employees-table,
+  table {
+    width: max-content;
+    min-width: 680px;
+  }
+
+  .employees-table th,
+  .employees-table td,
+  table th,
+  table td {
+    white-space: nowrap;
+  }
+
+  /* Modais quase em tela cheia no celular */
+  .modal-overlay,
+  .pix-modal-overlay {
+    padding: 10px !important;
+    align-items: flex-end;
+  }
+
+  .modal,
+  .modal-content,
+  .pix-modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: calc(100dvh - 20px) !important;
+    margin: 0 !important;
+    border-radius: 18px 18px 12px 12px !important;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pix-modal-header h2 {
+    font-size: 21px;
+  }
+
+  .pix-payment-highlight strong {
+    font-size: 28px;
+  }
+
+  /* Totem facial ocupa melhor a tela do celular/tablet */
+  .totem-card {
+    width: 100%;
+    max-width: 100%;
+    padding: 16px 12px;
+    border-radius: 18px;
+  }
+
+  .camera-area,
+  .facial-camera-area,
+  .totem-camera-area {
+    width: 100%;
+    max-width: 100%;
+    height: auto !important;
+    min-height: 300px;
+    aspect-ratio: 3 / 4;
+    border-radius: 18px;
+    overflow: hidden;
+  }
+
+  .camera-area video,
+  .facial-camera-area video,
+  .totem-camera-area video,
+  video.facial-video,
+  video.totem-video {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+  }
+
+  .totem-main-button {
+    width: 100%;
+    min-height: 48px;
+    font-size: 14px;
+    border-radius: 12px;
+  }
+
+  /* Cards de perfil e dados longos não estouram a viewport */
+  .profile-grid strong,
+  .profile-grid span,
+  .card strong,
+  .card span,
+  .registered-text,
+  .payment-worker-cell,
+  .payment-pix-cell,
+  .report-row,
+  .closing-detail-card,
+  .current-values {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Notificações cabem sem cobrir a tela inteira */
+  .notification,
+  .notification-content {
+    max-width: calc(100vw - 24px);
+  }
+}
+
+@media (max-width: 480px) {
+  .sidebar {
+    padding: 10px 10px 9px;
+    border-radius: 0 0 16px 16px;
+  }
+
+  .brand-logo {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+  }
+
+  .brand-area h1 {
+    font-size: 15px;
+  }
+
+  .content {
+    padding: 13px 10px 26px;
+  }
+
+  .menu button {
+    min-height: 40px;
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  .totem-menu-area {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 13px;
+  }
+
+  .panel {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .camera-area,
+  .facial-camera-area,
+  .totem-camera-area {
+    min-height: 280px;
+    aspect-ratio: 4 / 5;
+  }
+
+  .modal-overlay,
+  .pix-modal-overlay {
+    padding: 6px !important;
+  }
+
+  .modal,
+  .modal-content,
+  .pix-modal {
+    max-height: calc(100dvh - 12px) !important;
+  }
+}
