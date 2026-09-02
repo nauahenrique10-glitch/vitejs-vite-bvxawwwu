@@ -5928,6 +5928,25 @@ Essa ação não pode ser desfeita.`
       status: 'Em conferência',
     }
 
+  const diariasQuinzenaAtual = diarias.filter(
+    (diaria) =>
+      periodoFechamentoPorData(
+        new Date(`${diaria.data}T12:00:00`)
+      ).periodo === fechamentoAtual.periodo &&
+      diaria.status !== 'Cancelada'
+  )
+
+  const diariasAprovadasQuinzenaAtual = diariasQuinzenaAtual.filter(
+    (diaria) => diaria.status === 'Aprovada'
+  ).length
+
+  const andamentoFechamento =
+    diariasQuinzenaAtual.length > 0
+      ? Math.round(
+          (diariasAprovadasQuinzenaAtual / diariasQuinzenaAtual.length) * 100
+        )
+      : 0
+
   const funcionarioPixSelecionado = pagamentoPixSelecionado
     ? obterFuncionarioPorNome(pagamentoPixSelecionado.nome)
     : undefined
@@ -11182,11 +11201,11 @@ Essa ação não pode ser desfeita.`
                 <div className="fortnight-progress">
                   <div className="progress-top">
                     <span>Andamento do fechamento</span>
-                    <strong>75%</strong>
+                    <strong>{andamentoFechamento}%</strong>
                   </div>
 
                   <div className="progress-track">
-                    <div className="progress-fill" />
+                    <div className="progress-fill" style={{ width: `${andamentoFechamento}%` }} />
                   </div>
                 </div>
 
