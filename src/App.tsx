@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { supabase } from './supabase'
+import * as faceapi from 'face-api.js'
+import QRCode from 'qrcode'
 
 type Tela =
   | 'operacao'
@@ -42,8 +44,19 @@ type Funcionario = {
   tipoPix: string
   chavePix: string
   titularPix: string
+  cidadePix: string
   foto: string
   facial: 'Cadastrado' | 'Pendente'
+}
+
+type BiometricEnrollmentSupabase = {
+  id: string
+  employee_id: string
+  provider: string | null
+  status: 'Pendente' | 'Ativo' | 'Revogado' | 'Falhou'
+  face_descriptor: number[] | null
+  descriptor_version: string | null
+  sample_count: number
 }
 
 type RegistroPonto = {
@@ -166,6 +179,8 @@ type Pagamento = {
   quantidadeDiarias: number
   valorTotal: number
   pix: string
+  pixTitular?: string
+  pixCidade?: string
   status: 'Aguardando' | 'Processando' | 'Pago' | 'Falhou' | 'Cancelado'
   dataPagamento: string
 }
@@ -179,6 +194,7 @@ type PagamentoSupabase = {
   status: 'Pendente' | 'Processando' | 'Pago' | 'Falhou' | 'Cancelado'
   pix_key_snapshot: string | null
   pix_holder_snapshot: string | null
+  pix_city_snapshot: string | null
   transaction_reference: string | null
   paid_at: string | null
   observation: string | null
@@ -311,6 +327,7 @@ const funcionarioVazio: Funcionario = {
   tipoPix: '',
   chavePix: '',
   titularPix: '',
+  cidadePix: '',
   foto: '',
   facial: 'Pendente',
 }
@@ -330,6 +347,7 @@ type FuncionarioSupabase = {
   pix_type: string | null
   pix_key: string | null
   pix_holder: string | null
+  pix_city: string | null
   photo_path: string | null
   facial_status: 'Cadastrado' | 'Pendente'
 }
@@ -384,10 +402,111 @@ function funcionarioDoSupabase(registro: FuncionarioSupabase): Funcionario {
     tipoPix: registro.pix_type || '',
     chavePix: registro.pix_key || '',
     titularPix: registro.pix_holder || '',
+    cidadePix: registro.pix_city || '',
     foto: registro.photo_path || '',
     facial:
       registro.facial_status === 'Cadastrado' ? 'Cadastrado' : 'Pendente',
   }
+}
+
+
+function normalizarTextoPix(valor: string, limite: number) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9 $%*+\-./:]/g, '')
+    .trim()
+    .toUpperCase()
+    .slice(0, limite)
+}
+
+function normalizarChavePix(tipo: string, chave: string) {
+  const valor = String(chave || '').trim()
+  const tipoNormalizado = String(tipo || '').toLowerCase()
+
+  if (tipoNormalizado.includes('cpf') || tipoNormalizado.includes('cnpj')) {
+    return somenteDigitos(valor)
+  }
+
+  if (tipoNormalizado.includes('celular') || tipoNormalizado.includes('telefone')) {
+    if (valor.startsWith('+')) return `+${somenteDigitos(valor)}`
+    const digitos = somenteDigitos(valor)
+    if (digitos.length === 10 || digitos.length === 11) return `+55${digitos}`
+    if (digitos.startsWith('55')) return `+${digitos}`
+    return valor
+  }
+
+  return valor
+}
+
+function campoEmv(id: string, valor: string) {
+  const tamanho = String(valor.length).padStart(2, '0')
+  return `${id}${tamanho}${valor}`
+}
+
+function crc16Pix(valor: string) {
+  let crc = 0xffff
+
+  for (let i = 0; i < valor.length; i++) {
+    crc ^= valor.charCodeAt(i) << 8
+
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc & 0x8000) !== 0 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff
+    }
+  }
+
+  return crc.toString(16).toUpperCase().padStart(4, '0')
+}
+
+function gerarPayloadPixEstatico({
+  chave,
+  tipoChave,
+  titular,
+  cidade,
+  valor,
+}: {
+  chave: string
+  tipoChave: string
+  titular: string
+  cidade: string
+  valor: number
+}) {
+  const chaveNormalizada = normalizarChavePix(tipoChave, chave)
+  const titularNormalizado = normalizarTextoPix(titular, 25)
+  const cidadeNormalizada = normalizarTextoPix(cidade, 15)
+  const valorNumerico = Number(valor)
+
+  if (!chaveNormalizada || chaveNormalizada === '-') {
+    throw new Error('Cadastre uma chave PIX válida para este funcionário.')
+  }
+
+  if (!titularNormalizado) {
+    throw new Error('Cadastre o titular do PIX para este funcionário.')
+  }
+
+  if (!cidadeNormalizada) {
+    throw new Error('Cadastre a cidade do titular do PIX para gerar o QR Code.')
+  }
+
+  if (!Number.isFinite(valorNumerico) || valorNumerico <= 0) {
+    throw new Error('O pagamento precisa ter um valor maior que zero.')
+  }
+
+  const contaPix = campoEmv('00', 'BR.GOV.BCB.PIX') + campoEmv('01', chaveNormalizada)
+
+  const payloadSemCrc =
+    campoEmv('00', '01') +
+    campoEmv('26', contaPix) +
+    campoEmv('52', '0000') +
+    campoEmv('53', '986') +
+    campoEmv('54', valorNumerico.toFixed(2)) +
+    campoEmv('58', 'BR') +
+    campoEmv('59', titularNormalizado) +
+    campoEmv('60', cidadeNormalizada) +
+    campoEmv('62', campoEmv('05', '***')) +
+    '6304'
+
+  return payloadSemCrc + crc16Pix(payloadSemCrc)
 }
 
 function App() {
@@ -672,7 +791,23 @@ function App() {
   const [funcionarioReconhecido, setFuncionarioReconhecido] = useState('')
   const [horarioTotem, setHorarioTotem] = useState('')
   const [mensagemErroTotem, setMensagemErroTotem] = useState('')
+  const [tipoRegistroTotem, setTipoRegistroTotem] = useState<'Entrada' | 'Saída' | ''>('')
   const [agoraTotem, setAgoraTotem] = useState(new Date())
+  const videoTotemRef = useRef<HTMLVideoElement | null>(null)
+  const streamTotemRef = useRef<MediaStream | null>(null)
+  const [cameraTotemAtiva, setCameraTotemAtiva] = useState(false)
+  const [modelosFaciaisProntos, setModelosFaciaisProntos] = useState(false)
+  const [erroModelosFaciais, setErroModelosFaciais] = useState('')
+  const [cadastroFacialAberto, setCadastroFacialAberto] = useState(false)
+  const [funcionarioCadastroFacial, setFuncionarioCadastroFacial] = useState<Funcionario | null>(null)
+  const [consentimentoFacial, setConsentimentoFacial] = useState(false)
+  const [cameraFacialAtiva, setCameraFacialAtiva] = useState(false)
+  const [capturandoFacial, setCapturandoFacial] = useState(false)
+  const [progressoFacial, setProgressoFacial] = useState(0)
+  const [mensagemFacial, setMensagemFacial] = useState('')
+  const videoCadastroFacialRef = useRef<HTMLVideoElement | null>(null)
+  const streamCadastroFacialRef = useRef<MediaStream | null>(null)
+
 
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([
     {
@@ -689,6 +824,7 @@ function App() {
       tipoPix: 'CPF',
       chavePix: '123.456.789-00',
       titularPix: 'João da Silva',
+      cidadePix: 'Limeira',
       foto: '',
       facial: 'Cadastrado',
     },
@@ -706,6 +842,7 @@ function App() {
       tipoPix: 'E-mail',
       chavePix: 'maria@email.com',
       titularPix: 'Maria Oliveira',
+      cidadePix: 'Limeira',
       foto: '',
       facial: 'Cadastrado',
     },
@@ -723,6 +860,7 @@ function App() {
       tipoPix: 'Celular',
       chavePix: '(19) 99999-1003',
       titularPix: 'Carlos Santos',
+      cidadePix: 'Limeira',
       foto: '',
       facial: 'Pendente',
     },
@@ -740,6 +878,7 @@ function App() {
       tipoPix: 'CPF',
       chavePix: '321.654.987-00',
       titularPix: 'Pedro Almeida',
+      cidadePix: 'Limeira',
       foto: '',
       facial: 'Cadastrado',
     },
@@ -757,6 +896,7 @@ function App() {
       tipoPix: 'Celular',
       chavePix: '(19) 99999-3001',
       titularPix: 'Lucas Ferreira',
+      cidadePix: 'Limeira',
       foto: '',
       facial: 'Cadastrado',
     },
@@ -859,7 +999,7 @@ function App() {
       if (dadosSalvos) {
         const dados = JSON.parse(dadosSalvos)
 
-        // Beta 2.8:
+        // Arquitetura de dados:
         // O navegador mantém temporariamente apenas os módulos que ainda
         // não foram migrados para o backend real. Dados operacionais e
         // financeiros passam a vir exclusivamente do Supabase.
@@ -980,7 +1120,7 @@ function App() {
     const { data, error } = await supabase
       .from('employees')
       .select(
-        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, pix_city, photo_path, facial_status'
       )
       .order('full_name', { ascending: true })
 
@@ -1122,7 +1262,7 @@ function App() {
       supabase
         .from('payments')
         .select(
-          'id, employee_id, closing_id, amount, payment_method, status, pix_key_snapshot, pix_holder_snapshot, transaction_reference, paid_at, observation, employee:employees!payments_employee_id_fkey(full_name), closing:closings!payments_closing_id_fkey(start_date, end_date)'
+          'id, employee_id, closing_id, amount, payment_method, status, pix_key_snapshot, pix_holder_snapshot, pix_city_snapshot, transaction_reference, paid_at, observation, employee:employees!payments_employee_id_fkey(full_name), closing:closings!payments_closing_id_fkey(start_date, end_date)'
         )
         .order('created_at', { ascending: false }),
       supabase
@@ -1193,6 +1333,8 @@ function App() {
         quantidadeDiarias,
         valorTotal: Number(registro.amount) || 0,
         pix: registro.pix_key_snapshot || '-',
+        pixTitular: registro.pix_holder_snapshot || undefined,
+        pixCidade: registro.pix_city_snapshot || undefined,
         status: statusTela,
         dataPagamento: registro.paid_at
           ? new Date(registro.paid_at).toLocaleString('pt-BR', {
@@ -1486,7 +1628,7 @@ function App() {
       const carimbo = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getDate()).padStart(2, '0')}_${String(agora.getHours()).padStart(2, '0')}-${String(agora.getMinutes()).padStart(2, '0')}`
       const backup = {
         produto: 'Gestão de Diaristas - Sindicato',
-        versao: 'Beta 2.4',
+        versao: '1.0',
         exportadoEm: agora.toISOString(),
         dados: {
           funcionarios,
@@ -1508,7 +1650,7 @@ function App() {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `backup-sindicato-beta-${carimbo}.json`
+      link.download = `backup-sindicato-${carimbo}.json`
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -2224,6 +2366,23 @@ function App() {
     }
   }
 
+  async function copiarPixCopiaCola(payload: string) {
+    if (!payload) {
+      mostrarNotificacao('PIX Copia e Cola indisponível para este pagamento.', 'warning')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(payload)
+      mostrarNotificacao('PIX Copia e Cola copiado.', 'success')
+    } catch {
+      mostrarNotificacao(
+        'Não foi possível copiar automaticamente o PIX Copia e Cola.',
+        'warning'
+      )
+    }
+  }
+
   function formatarDataLista(data: string) {
     if (!data) return '-'
     return new Date(`${data}T12:00:00`).toLocaleDateString('pt-BR')
@@ -2722,8 +2881,9 @@ function App() {
       pix_type: novoFuncionario.tipoPix.trim() || null,
       pix_key: novoFuncionario.chavePix.trim() || null,
       pix_holder: novoFuncionario.titularPix.trim() || null,
+      pix_city: novoFuncionario.cidadePix.trim() || null,
       photo_path: novoFuncionario.foto || null,
-      facial_status: novoFuncionario.facial,
+      facial_status: 'Pendente',
       created_by: usuarioId,
       updated_by: usuarioId,
     }
@@ -2732,7 +2892,7 @@ function App() {
       .from('employees')
       .insert(payload)
       .select(
-        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, pix_city, photo_path, facial_status'
       )
       .single()
 
@@ -2766,16 +2926,268 @@ function App() {
     mostrarNotificacao(`${nome} foi cadastrado com sucesso no Supabase.`, 'success')
   }
 
-  function cadastrarFacial() {
-    setNovoFuncionario({
-      ...novoFuncionario,
-      facial: 'Cadastrado',
-    })
+  function encerrarCameraCadastroFacial() {
+    streamCadastroFacialRef.current?.getTracks().forEach((track) => track.stop())
+    streamCadastroFacialRef.current = null
+    if (videoCadastroFacialRef.current) {
+      videoCadastroFacialRef.current.srcObject = null
+    }
+    setCameraFacialAtiva(false)
+  }
 
-    mostrarNotificacao(
-      'Cadastro facial realizado no modo demonstrativo.',
-      'success'
+  function fecharCadastroFacial() {
+    encerrarCameraCadastroFacial()
+    setCadastroFacialAberto(false)
+    setFuncionarioCadastroFacial(null)
+    setConsentimentoFacial(false)
+    setCapturandoFacial(false)
+    setProgressoFacial(0)
+    setMensagemFacial('')
+  }
+
+  async function abrirCadastroFacial(funcionario: Funcionario) {
+    if (!funcionario.id) {
+      mostrarNotificacao(
+        'Salve o funcionário antes de cadastrar a biometria facial.',
+        'warning'
+      )
+      return
+    }
+
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode cadastrar ou recadastrar a biometria facial.',
+        'warning'
+      )
+      return
+    }
+
+    setFuncionarioCadastroFacial(funcionario)
+    setCadastroFacialAberto(true)
+    setConsentimentoFacial(false)
+    setProgressoFacial(0)
+    setMensagemFacial(
+      modelosFaciaisProntos
+        ? 'Confirme o consentimento e abra a câmera para iniciar.'
+        : 'Carregando os modelos de reconhecimento facial...'
     )
+  }
+
+  async function iniciarCameraCadastroFacial() {
+    if (!consentimentoFacial) {
+      mostrarNotificacao(
+        'Confirme o consentimento para o uso da biometria facial.',
+        'warning'
+      )
+      return
+    }
+
+    if (!modelosFaciaisProntos) {
+      mostrarNotificacao(
+        erroModelosFaciais || 'Os modelos faciais ainda estão sendo carregados.',
+        'warning'
+      )
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      mostrarNotificacao(
+        'Este navegador não disponibiliza acesso à câmera.',
+        'error'
+      )
+      return
+    }
+
+    try {
+      encerrarCameraCadastroFacial()
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: 'user',
+          width: { ideal: 720 },
+          height: { ideal: 720 },
+        },
+      })
+
+      streamCadastroFacialRef.current = stream
+      setCameraFacialAtiva(true)
+      setMensagemFacial('Posicione o rosto no centro, com boa iluminação e sem outras pessoas no quadro.')
+
+      window.setTimeout(async () => {
+        if (videoCadastroFacialRef.current) {
+          videoCadastroFacialRef.current.srcObject = stream
+          try {
+            await videoCadastroFacialRef.current.play()
+          } catch (erro) {
+            console.error('Não foi possível iniciar o vídeo:', erro)
+          }
+        }
+      }, 50)
+    } catch (erro) {
+      console.error('Erro ao acessar câmera:', erro)
+      setCameraFacialAtiva(false)
+      mostrarNotificacao(
+        'Não foi possível acessar a câmera. Confira a permissão do navegador.',
+        'error'
+      )
+    }
+  }
+
+  async function capturarCadastroFacial() {
+    if (!funcionarioCadastroFacial?.id || !videoCadastroFacialRef.current) return
+    if (!cameraFacialAtiva || !modelosFaciaisProntos) return
+
+    setCapturandoFacial(true)
+    setProgressoFacial(0)
+    setMensagemFacial('Capturando amostras faciais. Mantenha o rosto visível e faça pequenos movimentos naturais.')
+
+    try {
+      const descritores: number[][] = []
+      const totalAmostras = 5
+      let tentativas = 0
+      const maxTentativas = 12
+
+      while (descritores.length < totalAmostras && tentativas < maxTentativas) {
+        tentativas += 1
+
+        const deteccao = await faceapi
+          .detectSingleFace(
+            videoCadastroFacialRef.current,
+            new faceapi.TinyFaceDetectorOptions({
+              inputSize: 320,
+              scoreThreshold: 0.55,
+            })
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptor()
+
+        if (deteccao?.descriptor?.length === 128) {
+          descritores.push(Array.from(deteccao.descriptor))
+          setProgressoFacial(descritores.length)
+        }
+
+        if (descritores.length < totalAmostras) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500))
+        }
+      }
+
+      if (descritores.length < totalAmostras) {
+        throw new Error(
+          'Não foi possível obter cinco amostras válidas. Centralize o rosto, melhore a iluminação e tente novamente.'
+        )
+      }
+
+      const descritorMedio = Array.from({ length: 128 }, (_, indice) =>
+        descritores.reduce((soma, descritor) => soma + descritor[indice], 0) /
+        descritores.length
+      )
+
+      const norma = Math.sqrt(
+        descritorMedio.reduce((soma, valor) => soma + valor * valor, 0)
+      )
+      const descritorNormalizado = descritorMedio.map((valor) =>
+        norma > 0 ? valor / norma : valor
+      )
+
+      const { data: sessao } = await supabase.auth.getSession()
+      const usuarioId = sessao.session?.user.id ?? null
+      const agora = new Date().toISOString()
+
+      const { data: cadastroExistente, error: erroConsulta } = await supabase
+        .from('biometric_enrollments')
+        .select('id, employee_id, provider, status, face_descriptor, descriptor_version, sample_count')
+        .eq('employee_id', funcionarioCadastroFacial.id)
+        .in('status', ['Ativo', 'Pendente'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (erroConsulta) throw erroConsulta
+
+      const payloadBiometria = {
+        employee_id: funcionarioCadastroFacial.id,
+        provider: 'face-api.js',
+        provider_subject_id: funcionarioCadastroFacial.id,
+        status: 'Ativo',
+        consent_recorded_at: agora,
+        enrolled_at: agora,
+        revoked_at: null,
+        face_descriptor: descritorNormalizado,
+        descriptor_version: 'face-api.js-faceRecognitionNet-v1',
+        sample_count: totalAmostras,
+        created_by: usuarioId,
+      }
+
+      if (cadastroExistente?.id) {
+        const { error } = await supabase
+          .from('biometric_enrollments')
+          .update({
+            ...payloadBiometria,
+            created_by: undefined,
+          })
+          .eq('id', cadastroExistente.id)
+
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('biometric_enrollments')
+          .insert(payloadBiometria)
+
+        if (error) throw error
+      }
+
+      const { error: erroFuncionario } = await supabase
+        .from('employees')
+        .update({
+          facial_status: 'Cadastrado',
+          updated_by: usuarioId,
+        })
+        .eq('id', funcionarioCadastroFacial.id)
+
+      if (erroFuncionario) throw erroFuncionario
+
+      const funcionarioAtualizado: Funcionario = {
+        ...funcionarioCadastroFacial,
+        facial: 'Cadastrado',
+      }
+
+      setFuncionarios((atuais) =>
+        atuais.map((item) =>
+          item.id === funcionarioAtualizado.id ? funcionarioAtualizado : item
+        )
+      )
+      setFuncionarioSelecionado((atual) =>
+        atual?.id === funcionarioAtualizado.id ? funcionarioAtualizado : atual
+      )
+      setFuncionarioCadastroFacial(funcionarioAtualizado)
+
+      registrarAuditoria(
+        'Biometria facial cadastrada',
+        'Funcionários',
+        `Biometria facial de ${funcionarioAtualizado.nome} cadastrada com ${totalAmostras} amostras.`,
+        'Atenção',
+        undefined,
+        'employee',
+        funcionarioAtualizado.id
+      )
+
+      encerrarCameraCadastroFacial()
+      setMensagemFacial('Biometria facial cadastrada com sucesso.')
+      mostrarNotificacao(
+        `Biometria facial de ${funcionarioAtualizado.nome} cadastrada com sucesso.`,
+        'success'
+      )
+    } catch (erro) {
+      console.error('Erro ao cadastrar biometria facial:', erro)
+      const mensagem =
+        erro instanceof Error
+          ? erro.message
+          : 'Não foi possível concluir o cadastro facial.'
+      setMensagemFacial(mensagem)
+      mostrarNotificacao(mensagem, 'error')
+    } finally {
+      setCapturandoFacial(false)
+    }
   }
 
   function iniciarEdicaoFuncionario(funcionario: Funcionario) {
@@ -2862,6 +3274,7 @@ function App() {
       pix_type: dados.tipoPix.trim() || null,
       pix_key: dados.chavePix.trim() || null,
       pix_holder: dados.titularPix.trim() || null,
+      pix_city: dados.cidadePix.trim() || null,
       photo_path: dados.foto || null,
       facial_status: dados.facial,
       updated_by: usuarioId,
@@ -2873,7 +3286,7 @@ function App() {
       .update(payload)
       .eq('id', original.id)
       .select(
-        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, pix_city, photo_path, facial_status'
       )
       .single()
 
@@ -2995,7 +3408,7 @@ function App() {
       })
       .eq('id', funcionario.id)
       .select(
-        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, pix_city, photo_path, facial_status'
       )
       .single()
 
@@ -3931,6 +4344,7 @@ function App() {
           status: 'Pendente',
           pix_key_snapshot: funcionario?.chavePix || null,
           pix_holder_snapshot: funcionario?.titularPix || funcionario?.nome || item.nome,
+          pix_city_snapshot: funcionario?.cidadePix || null,
           observation: `Pagamento referente ao fechamento ${fechamento.periodo}.`,
           created_by: usuarioLogado?.authId || null,
           updated_by: usuarioLogado?.authId || null,
@@ -4294,7 +4708,7 @@ function App() {
       .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.data)}</td><td>${escaparHtml(item.tipoDia)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(moeda(item.valor))}</td></tr>`)
       .join('')
 
-    janela.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório - Gestão de Diaristas</title><style>body{font-family:Arial,sans-serif;color:#2f2732;padding:28px}h1{margin:0 0 6px;color:#54266c}p{color:#6f6572}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0}.card{border:1px solid #ddd4e1;border-radius:12px;padding:12px}.card span{font-size:11px;color:#777}.card strong{display:block;font-size:18px;margin-top:6px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:8px;border-bottom:1px solid #e9e4ec;text-align:left}th{background:#f3edf6;color:#5b2c70}@media print{button{display:none}body{padding:0}}</style></head><body><h1>Gestão de Diaristas</h1><p>Sindicato • Operação DHL Mogi Mirim • Beta 1.0</p><div class="cards"><div class="card"><span>Funcionários ativos</span><strong>${funcionarios.filter((f) => f.status === 'Ativo').length}</strong></div><div class="card"><span>Registros de ponto</span><strong>${registrosPonto.filter((p) => p.status === 'Registrado').length}</strong></div><div class="card"><span>Valor em diárias</span><strong>${escaparHtml(moeda(totalDiarias))}</strong></div><div class="card"><span>Pagamentos realizados</span><strong>${escaparHtml(moeda(totalPago))}</strong></div></div><h2>Diárias</h2><table><thead><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Status</th><th>Total</th></tr></thead><tbody>${linhas || '<tr><td colspan="5">Nenhuma diária cadastrada.</td></tr>'}</tbody></table><script>window.onload=()=>{window.print()}</script></body></html>`)
+    janela.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório - Gestão de Diaristas</title><style>body{font-family:Arial,sans-serif;color:#2f2732;padding:28px}h1{margin:0 0 6px;color:#54266c}p{color:#6f6572}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0}.card{border:1px solid #ddd4e1;border-radius:12px;padding:12px}.card span{font-size:11px;color:#777}.card strong{display:block;font-size:18px;margin-top:6px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:8px;border-bottom:1px solid #e9e4ec;text-align:left}th{background:#f3edf6;color:#5b2c70}@media print{button{display:none}body{padding:0}}</style></head><body><h1>Gestão de Diaristas</h1><p>Sindicato • Operação DHL Mogi Mirim</p><div class="cards"><div class="card"><span>Funcionários ativos</span><strong>${funcionarios.filter((f) => f.status === 'Ativo').length}</strong></div><div class="card"><span>Registros de ponto</span><strong>${registrosPonto.filter((p) => p.status === 'Registrado').length}</strong></div><div class="card"><span>Valor em diárias</span><strong>${escaparHtml(moeda(totalDiarias))}</strong></div><div class="card"><span>Pagamentos realizados</span><strong>${escaparHtml(moeda(totalPago))}</strong></div></div><h2>Diárias</h2><table><thead><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Status</th><th>Total</th></tr></thead><tbody>${linhas || '<tr><td colspan="5">Nenhuma diária cadastrada.</td></tr>'}</tbody></table><script>window.onload=()=>{window.print()}</script></body></html>`)
     janela.document.close()
 
     registrarAuditoria('Relatório preparado para PDF', 'Relatórios', 'Relatório geral aberto para impressão/salvamento em PDF.', 'Informação')
@@ -4460,6 +4874,38 @@ function App() {
   }
 
   useEffect(() => {
+    let ativo = true
+
+    async function carregarModelosFaciais() {
+      try {
+        setErroModelosFaciais('')
+        await Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
+          faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+          faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
+        ])
+        if (ativo) setModelosFaciaisProntos(true)
+      } catch (erro) {
+        console.error('Erro ao carregar modelos faciais:', erro)
+        if (ativo) {
+          setModelosFaciaisProntos(false)
+          setErroModelosFaciais(
+            'Não foi possível carregar os modelos de reconhecimento facial.'
+          )
+        }
+      }
+    }
+
+    carregarModelosFaciais()
+
+    return () => {
+      ativo = false
+      streamCadastroFacialRef.current?.getTracks().forEach((track) => track.stop())
+      streamTotemRef.current?.getTracks().forEach((track) => track.stop())
+    }
+  }, [])
+
+  useEffect(() => {
     const intervaloRelogio = window.setInterval(() => {
       setAgoraTotem(new Date())
     }, 1000)
@@ -4477,75 +4923,285 @@ function App() {
     return () => window.clearTimeout(retornoAutomatico)
   }, [estadoTotem])
 
-  function simularReconhecimento() {
-    setMensagemErroTotem('')
-    setEstadoTotem('reconhecendo')
+  function desligarCameraTotem() {
+    streamTotemRef.current?.getTracks().forEach((track) => track.stop())
+    streamTotemRef.current = null
+    setCameraTotemAtiva(false)
 
-    window.setTimeout(() => {
-      const agora = new Date()
+    if (videoTotemRef.current) {
+      videoTotemRef.current.srcObject = null
+    }
+  }
 
-      const horario = agora.toLocaleTimeString('pt-BR', {
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-
-      const data = agora.toLocaleDateString('pt-BR')
-
-      const candidatos = funcionarios.filter(
-        (funcionario) =>
-          funcionario.status === 'Ativo' &&
-          funcionario.facial === 'Cadastrado'
+  async function iniciarReconhecimentoFacialTotem() {
+    if (!modelosFaciaisProntos) {
+      setMensagemErroTotem(
+        erroModelosFaciais || 'O reconhecimento facial ainda está sendo preparado. Tente novamente em alguns segundos.'
       )
+      setEstadoTotem('erro')
+      return
+    }
 
-      const aindaSemPontoHoje = candidatos.filter((funcionario) => {
-        const registroHoje = registrosPonto.find(
-          (registro) =>
-            registro.nome === funcionario.nome &&
-            registro.data === data &&
-            registro.status === 'Registrado'
-        )
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMensagemErroTotem('Este dispositivo ou navegador não disponibilizou acesso à câmera.')
+      setEstadoTotem('erro')
+      return
+    }
 
-        return !registroHoje
+    setMensagemErroTotem('')
+    setTipoRegistroTotem('')
+    setFuncionarioReconhecido('')
+    setHorarioTotem('')
+
+    try {
+      desligarCameraTotem()
+
+      const videoAnterior = videoTotemRef.current
+      if (videoAnterior) {
+        try {
+          videoAnterior.pause()
+        } catch {
+          // Sem ação: apenas garante que nenhum quadro anterior permaneça em reprodução.
+        }
+        videoAnterior.srcObject = null
+        videoAnterior.removeAttribute('src')
+        videoAnterior.load()
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
       })
 
-      const funcionarioDemo =
-        aindaSemPontoHoje[0] ||
-        candidatos.find((funcionario) => funcionario.nome === 'Pedro Almeida') ||
-        candidatos[0]
+      const track = stream.getVideoTracks()[0]
+      if (!track || track.readyState !== 'live') {
+        stream.getTracks().forEach((item) => item.stop())
+        throw new Error('A câmera não iniciou uma transmissão de vídeo válida.')
+      }
 
-      if (!funcionarioDemo) {
+      streamTotemRef.current = stream
+      setCameraTotemAtiva(true)
+      setEstadoTotem('reconhecendo')
+
+      // Dá tempo para o React renderizar o <video> visível antes de anexar o stream.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      })
+
+      const video = videoTotemRef.current
+      if (!video) {
+        throw new Error('Câmera do terminal não foi inicializada.')
+      }
+
+      video.srcObject = stream
+
+      await video.play()
+
+      // Não aceita o último quadro congelado de uma captura anterior.
+      const inicioEspera = Date.now()
+      while (
+        (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+          video.videoWidth < 160 ||
+          video.videoHeight < 120) &&
+        Date.now() - inicioEspera < 5000
+      ) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100))
+      }
+
+      if (
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+        video.videoWidth < 160 ||
+        video.videoHeight < 120
+      ) {
+        throw new Error('A câmera abriu, mas não entregou uma imagem válida.')
+      }
+
+      const tempoInicial = video.currentTime
+      await new Promise((resolve) => window.setTimeout(resolve, 700))
+
+      if (video.currentTime <= tempoInicial + 0.05) {
+        throw new Error('A imagem da câmera não está atualizando.')
+      }
+
+      const avaliarQuadro = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 160
+        canvas.height = 120
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+
+        if (!context) {
+          return { valido: true, media: 100, desvio: 100 }
+        }
+
+        context.drawImage(video, 0, 0, canvas.width, canvas.height)
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+
+        let soma = 0
+        let somaQuadrados = 0
+        let quantidade = 0
+
+        // Amostragem espaçada para validar rapidamente se existe uma imagem real.
+        for (let i = 0; i < pixels.length; i += 4 * 16) {
+          const luminancia =
+            pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722
+          soma += luminancia
+          somaQuadrados += luminancia * luminancia
+          quantidade += 1
+        }
+
+        const media = quantidade ? soma / quantidade : 0
+        const variancia = quantidade
+          ? Math.max(0, somaQuadrados / quantidade - media * media)
+          : 0
+        const desvio = Math.sqrt(variancia)
+
+        return {
+          valido: media >= 12 && desvio >= 4,
+          media,
+          desvio,
+        }
+      }
+
+      const quadroInicial = avaliarQuadro()
+      if (!quadroInicial.valido) {
+        desligarCameraTotem()
         setMensagemErroTotem(
-          'Nenhum funcionário ativo com reconhecimento facial cadastrado foi encontrado.'
+          'A câmera está sem imagem útil ou parece estar coberta. Descubra a lente, melhore a iluminação e tente novamente.'
         )
         setEstadoTotem('erro')
         return
       }
 
-      setFuncionarioReconhecido(funcionarioDemo.nome)
-      setHorarioTotem(horario)
-      setMensagemErroTotem(
-        'Demonstração visual: nenhum ponto foi gravado. O registro facial real será liberado somente após a integração com provedor biométrico e prova de vida.'
+      const descritores: number[][] = []
+      let ultimaDeteccaoEm = 0
+
+      // Exige três detecções em quadros atuais diferentes antes de enviar ao servidor.
+      for (let tentativa = 0; tentativa < 12; tentativa += 1) {
+        const quadro = avaliarQuadro()
+        if (!quadro.valido) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250))
+          continue
+        }
+
+        const deteccao = await faceapi
+          .detectSingleFace(
+            video,
+            new faceapi.TinyFaceDetectorOptions({
+              inputSize: 320,
+              scoreThreshold: 0.65,
+            })
+          )
+          .withFaceLandmarks()
+          .withFaceDescriptor()
+
+        if (deteccao) {
+          const caixa = deteccao.detection.box
+          const areaVideo = Math.max(1, video.videoWidth * video.videoHeight)
+          const proporcaoRosto = (caixa.width * caixa.height) / areaVideo
+          const centroX = caixa.x + caixa.width / 2
+          const centroY = caixa.y + caixa.height / 2
+          const centralizado =
+            Math.abs(centroX - video.videoWidth / 2) <= video.videoWidth * 0.34 &&
+            Math.abs(centroY - video.videoHeight / 2) <= video.videoHeight * 0.34
+
+          if (proporcaoRosto >= 0.06 && centralizado) {
+            const agoraCaptura = performance.now()
+            if (agoraCaptura - ultimaDeteccaoEm >= 220) {
+              descritores.push(Array.from(deteccao.descriptor))
+              ultimaDeteccaoEm = agoraCaptura
+            }
+          }
+        }
+
+        if (descritores.length >= 3) break
+        await new Promise((resolve) => window.setTimeout(resolve, 280))
+      }
+
+      if (descritores.length < 3) {
+        desligarCameraTotem()
+        setMensagemErroTotem(
+          'Não foi possível confirmar um rosto real em quadros atuais da câmera. Mantenha o rosto visível, centralizado e bem iluminado e tente novamente.'
+        )
+        setEstadoTotem('erro')
+        return
+      }
+
+      // Usa a média das três leituras para reduzir ruído de um único quadro.
+      const descriptor = Array.from({ length: 128 }, (_, indice) => {
+        const soma = descritores.reduce((total, atual) => total + atual[indice], 0)
+        return soma / descritores.length
+      })
+
+      const { data, error } = await supabase.functions.invoke('facial-attendance', {
+        body: { descriptor },
+      })
+
+      desligarCameraTotem()
+
+      if (error) {
+        console.error('Erro ao chamar facial-attendance:', error)
+        setMensagemErroTotem(
+          'Não foi possível concluir a identificação no servidor. Tente novamente.'
+        )
+        setEstadoTotem('erro')
+        return
+      }
+
+      if (!data?.success || !data?.recognized) {
+        setMensagemErroTotem(
+          data?.error || data?.message || 'Rosto não reconhecido. Confira o cadastro facial e tente novamente.'
+        )
+        setEstadoTotem('erro')
+        return
+      }
+
+      const ocorrido = data?.attendance?.occurred_at
+        ? new Date(data.attendance.occurred_at)
+        : new Date()
+      const tipo = data?.attendance?.type === 'Saída' ? 'Saída' : 'Entrada'
+
+      setFuncionarioReconhecido(data?.employee?.name || 'Funcionário')
+      setTipoRegistroTotem(tipo)
+      setHorarioTotem(
+        ocorrido.toLocaleTimeString('pt-BR', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'America/Sao_Paulo',
+        })
       )
+      setAgoraTotem(ocorrido)
+      setMensagemErroTotem(data?.message || `${tipo} registrada com sucesso.`)
       setEstadoTotem('sucesso')
-    }, 1800)
-  }
 
-  function simularFalhaReconhecimento() {
-    setMensagemErroTotem('')
-    setEstadoTotem('reconhecendo')
+      if (usuarioLogado) {
+        await carregarPontosSupabase()
+      }
+    } catch (erro) {
+      console.error('Erro no reconhecimento facial do terminal:', erro)
+      desligarCameraTotem()
 
-    window.setTimeout(() => {
-      setMensagemErroTotem(
-        'Não foi possível confirmar sua identidade. Ajuste a posição do rosto e tente novamente.'
-      )
+      const mensagem =
+        erro instanceof DOMException && erro.name === 'NotAllowedError'
+          ? 'A permissão da câmera foi negada. Permita o acesso à câmera e tente novamente.'
+          : erro instanceof Error && erro.message
+          ? erro.message
+          : 'Não foi possível iniciar ou processar a câmera. Tente novamente.'
+
+      setMensagemErroTotem(mensagem)
       setEstadoTotem('erro')
-    }, 1500)
+    }
   }
 
   function novoRegistroTotem() {
+    desligarCameraTotem()
     setEstadoTotem('aguardando')
     setFuncionarioReconhecido('')
     setHorarioTotem('')
+    setTipoRegistroTotem('')
     setMensagemErroTotem('')
   }
 
@@ -4625,11 +5281,62 @@ function App() {
     ? obterFuncionarioPorNome(pagamentoPixSelecionado.nome)
     : undefined
 
-  const qrPix = pagamentoPixSelecionado
-    ? gerarPadraoQr(
-        `${pagamentoPixSelecionado.nome}-${pagamentoPixSelecionado.pix}-${pagamentoPixSelecionado.valorTotal}`
-      )
-    : []
+  const [pixCopiaCola, setPixCopiaCola] = useState('')
+  const [qrPixDataUrl, setQrPixDataUrl] = useState('')
+  const [erroQrPix, setErroQrPix] = useState('')
+
+  useEffect(() => {
+    let cancelado = false
+
+    async function gerarQrPixSelecionado() {
+      setPixCopiaCola('')
+      setQrPixDataUrl('')
+      setErroQrPix('')
+
+      if (!pagamentoPixSelecionado) return
+
+      const titular =
+        pagamentoPixSelecionado.pixTitular ||
+        funcionarioPixSelecionado?.titularPix ||
+        pagamentoPixSelecionado.nome
+      const cidade =
+        pagamentoPixSelecionado.pixCidade ||
+        funcionarioPixSelecionado?.cidadePix ||
+        ''
+      const tipoChave = funcionarioPixSelecionado?.tipoPix || ''
+
+      try {
+        const payload = gerarPayloadPixEstatico({
+          chave: pagamentoPixSelecionado.pix,
+          tipoChave,
+          titular,
+          cidade,
+          valor: pagamentoPixSelecionado.valorTotal,
+        })
+
+        const dataUrl = await QRCode.toDataURL(payload, {
+          errorCorrectionLevel: 'M',
+          margin: 2,
+          width: 320,
+        })
+
+        if (cancelado) return
+        setPixCopiaCola(payload)
+        setQrPixDataUrl(dataUrl)
+      } catch (error) {
+        if (cancelado) return
+        const mensagem =
+          error instanceof Error ? error.message : 'Não foi possível gerar o QR PIX.'
+        setErroQrPix(mensagem)
+      }
+    }
+
+    void gerarQrPixSelecionado()
+
+    return () => {
+      cancelado = true
+    }
+  }, [pagamentoPixSelecionado, funcionarioPixSelecionado])
 
   const caixaNotificacao = notificacao ? (
     <div className={`notification-toast ${notificacao.tipo}`}>
@@ -5656,21 +6363,6 @@ function App() {
               >
                 Gestão de Diaristas
               </strong>
-              <span
-                style={{
-                  display: 'inline-flex',
-                  marginTop: '7px',
-                  padding: '4px 8px',
-                  borderRadius: '999px',
-                  background: '#f3ecf6',
-                  color: '#69347f',
-                  fontSize: '9px',
-                  fontWeight: 850,
-                  letterSpacing: '.4px',
-                }}
-              >
-                BETA 1.0
-              </span>
             </div>
           </div>
 
@@ -6085,10 +6777,6 @@ function App() {
               </button>
             </div>
 
-            <div style={{ margin: '0 0 14px', padding: '11px 12px', borderRadius: '11px', background: '#f5f9ff', border: '1px solid #dce8f7', color: '#526273', fontSize: '10px', lineHeight: 1.55 }}>
-              <strong style={{ color: '#37475a' }}>Acesso seguro:</strong>{' '}entre com o e-mail e a senha cadastrados no Supabase. A sessão permanece ativa até você sair da conta.
-            </div>
-
             {erroLogin && (
               <div
                 style={{
@@ -6125,23 +6813,6 @@ function App() {
               Entrar no painel
             </button>
 
-            <div
-              style={{
-                marginTop: '18px',
-                padding: '12px',
-                borderRadius: '11px',
-                background: '#f8f6f9',
-                border: '1px solid #eee8f0',
-                color: '#807585',
-                fontSize: '9px',
-                lineHeight: 1.6,
-              }}
-            >
-              <strong style={{ color: '#5f5065' }}>
-                Autenticação real ativa.
-              </strong>{' '}
-              O login e a sessão agora são validados pelo Supabase Auth. As permissões são carregadas da tabela <strong>profiles</strong> antes de liberar o painel.
-            </div>
           </form>
         </div>
 
@@ -6162,7 +6833,7 @@ function App() {
               {recuperacaoEtapa === 'identificacao' && (
                 <form onSubmit={iniciarRecuperacaoSenha}>
                   <p style={{ color: '#756c79', fontSize: '12px', lineHeight: 1.6, marginTop: 0 }}>
-                    Informe o e-mail usado para acessar o sistema. Enviaremos um link seguro de recuperação pelo Supabase Auth.
+                    Informe o e-mail usado para acessar o sistema. Enviaremos um link para redefinição de senha.
                   </p>
                   <div className="form-group" style={{ marginBottom: '16px' }}>
                     <label>E-mail de acesso</label>
@@ -6513,6 +7184,23 @@ function App() {
                             : '0 0 0 8px rgba(255,255,255,.025)',
                       }}
                     >
+                      <video
+                        ref={videoTotemRef}
+                        muted
+                        playsInline
+                        autoPlay
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          borderRadius: 'inherit',
+                          transform: 'scaleX(-1)',
+                          opacity: cameraTotemAtiva ? 1 : 0,
+                        }}
+                      />
+
                       {[
                         { top: '-2px', left: '-2px', borderTop: '3px solid #b99ac7', borderLeft: '3px solid #b99ac7' },
                         { top: '-2px', right: '-2px', borderTop: '3px solid #b99ac7', borderRight: '3px solid #b99ac7' },
@@ -6541,6 +7229,7 @@ function App() {
                       <div
                         style={{
                           position: 'absolute',
+                          display: cameraTotemAtiva ? 'none' : 'block',
                           left: '50%',
                           top: '50%',
                           transform: 'translate(-50%, -50%)',
@@ -6710,7 +7399,7 @@ function App() {
                       fontSize: '10px',
                     }}
                   >
-                    Seu registro de presença foi concluído com sucesso.
+                    {tipoRegistroTotem ? `${tipoRegistroTotem} registrada com sucesso.` : 'Registro concluído com sucesso.'}
                   </p>
 
                   <div
@@ -6775,7 +7464,7 @@ function App() {
                             fontSize: '11px',
                           }}
                         >
-                          {agoraTotem.toLocaleDateString('pt-BR')}
+                          {agoraTotem.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
                         </strong>
                       </div>
 
@@ -6936,7 +7625,7 @@ function App() {
                 }}
               >
                 <button
-                  onClick={simularReconhecimento}
+                  onClick={iniciarReconhecimentoFacialTotem}
                   disabled={estadoTotem === 'reconhecendo'}
                   style={{
                     minHeight: '42px',
@@ -6963,27 +7652,9 @@ function App() {
                 >
                   {estadoTotem === 'reconhecendo'
                     ? 'Processando identificação...'
-                    : '◉ Iniciar reconhecimento'}
+                    : '◉ Abrir câmera e registrar ponto'}
                 </button>
 
-                {estadoTotem === 'aguardando' && (
-                  <button
-                    onClick={simularFalhaReconhecimento}
-                    style={{
-                      minHeight: '42px',
-                      padding: '0 14px',
-                      borderRadius: '12px',
-                      border: '1px solid #e3dce6',
-                      background: '#ffffff',
-                      color: '#8c818f',
-                      fontSize: '8px',
-                      fontWeight: 800,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Simular falha
-                  </button>
-                )}
               </div>
             )}
           </section>
@@ -7198,8 +7869,7 @@ function App() {
                 lineHeight: 1.5,
               }}
             >
-              Protótipo demonstrativo. O reconhecimento facial real será
-              integrado posteriormente com validação e prova de vida.
+              O reconhecimento facial depende da integração biométrica habilitada para o terminal.
             </div>
           </aside>
         </main>
@@ -7313,8 +7983,18 @@ function App() {
                 <div className="pix-data-box">
                   <span>Titular</span>
                   <strong>
-                    {funcionarioPixSelecionado?.titularPix ||
+                    {pagamentoPixSelecionado.pixTitular ||
+                      funcionarioPixSelecionado?.titularPix ||
                       pagamentoPixSelecionado.nome}
+                  </strong>
+                </div>
+
+                <div className="pix-data-box">
+                  <span>Cidade do titular</span>
+                  <strong>
+                    {pagamentoPixSelecionado.pixCidade ||
+                      funcionarioPixSelecionado?.cidadePix ||
+                      'Não cadastrada'}
                   </strong>
                 </div>
 
@@ -7344,22 +8024,55 @@ function App() {
               <div className="pix-qr-area">
                 <div className="pix-qr-label">QR CODE PIX</div>
 
-                <div className="fake-qr-code">
-                  {qrPix.map((linha, linhaIndex) =>
-                    linha.map((ativo, colunaIndex) => (
-                      <span
-                        key={`${linhaIndex}-${colunaIndex}`}
-                        className={ativo ? 'qr-cell active' : 'qr-cell'}
-                      />
-                    ))
-                  )}
-                </div>
+                {qrPixDataUrl ? (
+                  <img
+                    src={qrPixDataUrl}
+                    alt="QR Code PIX para pagamento"
+                    style={{
+                      width: 'min(100%, 280px)',
+                      aspectRatio: '1 / 1',
+                      objectFit: 'contain',
+                      background: '#ffffff',
+                      borderRadius: '16px',
+                      padding: '10px',
+                      boxSizing: 'border-box',
+                      border: '1px solid #e4dce8',
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      minHeight: '220px',
+                      width: '100%',
+                      display: 'grid',
+                      placeItems: 'center',
+                      textAlign: 'center',
+                      padding: '20px',
+                      borderRadius: '16px',
+                      background: '#f8f5fa',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <span style={{ color: '#6f6572', fontSize: '13px' }}>
+                      {erroQrPix || 'Gerando QR Code PIX...'}
+                    </span>
+                  </div>
+                )}
 
                 <strong>Escaneie para pagamento</strong>
 
                 <small>
-                  QR demonstrativo. O sistema ainda não executa a transferência PIX automaticamente.
+                  QR Code PIX estático com o valor exato deste pagamento. Confira os dados no aplicativo do banco antes de concluir.
                 </small>
+
+                {pixCopiaCola && (
+                  <button
+                    className="copy-pix-button"
+                    onClick={() => copiarPixCopiaCola(pixCopiaCola)}
+                  >
+                    Copiar PIX Copia e Cola
+                  </button>
+                )}
               </div>
             </div>
 
@@ -10223,41 +10936,33 @@ function App() {
                       }
                     />
                   </div>
+
+                  <div className="form-group">
+                    <label>Cidade do titular</label>
+                    <input
+                      value={novoFuncionario.cidadePix}
+                      placeholder="Ex.: Limeira"
+                      maxLength={15}
+                      onChange={(e) =>
+                        setNovoFuncionario({
+                          ...novoFuncionario,
+                          cidadePix: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
                 </div>
 
                 <h3 className="form-section-title">Reconhecimento facial</h3>
 
                 <div className="biometric-box">
                   <div className="biometric-photo">👤</div>
-
                   <div className="biometric-info">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) =>
-                        setNovoFuncionario({
-                          ...novoFuncionario,
-                          foto: e.target.files?.[0]?.name || '',
-                        })
-                      }
-                    />
-
-                    <button
-                      className="action-button"
-                      onClick={cadastrarFacial}
-                    >
-                      Simular cadastro facial
-                    </button>
-
-                    <span
-                      className={
-                        novoFuncionario.facial === 'Cadastrado'
-                          ? 'employee-status active-status'
-                          : 'employee-status pending-status'
-                      }
-                    >
-                      Facial: {novoFuncionario.facial}
+                    <strong style={{ color: '#4b1f6f' }}>Cadastro após salvar o funcionário</strong>
+                    <span style={{ color: '#8f8694', fontSize: '10px', lineHeight: 1.5 }}>
+                      A biometria facial precisa ser vinculada ao registro definitivo do funcionário. Salve o cadastro e, em seguida, abra o perfil para capturar o rosto pela câmera.
                     </span>
+                    <span className="employee-status pending-status">Facial: Pendente</span>
                   </div>
                 </div>
 
@@ -10794,6 +11499,21 @@ function App() {
                             }
                           />
                         </div>
+
+                        <div className="form-group">
+                          <label>Cidade do titular</label>
+                          <input
+                            value={funcionarioEmEdicao.cidadePix}
+                            placeholder="Ex.: Limeira"
+                            maxLength={15}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                cidadePix: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
                       </div>
 
                       <div className="form-actions">
@@ -11212,6 +11932,18 @@ function App() {
                               ? 'Trabalhador liberado para identificação no terminal de ponto.'
                               : 'O reconhecimento facial ainda precisa ser cadastrado.'}
                           </p>
+
+                          {usuarioLogado?.perfil === 'Administrador' && (
+                            <button
+                              className="action-button"
+                              onClick={() => abrirCadastroFacial(funcionarioSelecionado)}
+                              style={{ marginTop: '12px' }}
+                            >
+                              {funcionarioSelecionado.facial === 'Cadastrado'
+                                ? 'Recadastrar biometria facial'
+                                : 'Cadastrar biometria facial'}
+                            </button>
+                          )}
                         </div>
 
                         <div style={estiloCard}>
@@ -16475,7 +17207,7 @@ function App() {
                       {
                         titulo: 'Eventos registrados',
                         valor: registrosAuditoria.length,
-                        detalhe: 'Supabase protegido',
+                        detalhe: 'histórico protegido',
                         fundo: '#f1eaf5',
                         cor: '#65387a',
                       },
@@ -16692,7 +17424,7 @@ function App() {
                           fontSize: '8px',
                         }}
                       >
-                        Últimos 500 eventos do Supabase
+                        Últimos 500 eventos registrados
                       </span>
                     </div>
 
@@ -16861,9 +17593,7 @@ function App() {
                       lineHeight: 1.55,
                     }}
                   >
-                    ⛨ Auditoria real conectada ao Supabase. Os eventos são gravados
-                    no servidor pela função segura write_audit e o histórico é somente
-                    leitura no painel administrativo.
+                    ⛨ O histórico de auditoria é protegido e somente leitura no painel administrativo.
                   </div>
                 </>
               )
@@ -17037,7 +17767,7 @@ function App() {
                     Acessos cadastrados
                   </strong>
                   <span style={{ color: '#9b929e', fontSize: '9px' }}>
-                    Usuários reais • Supabase Auth + profiles
+                    Usuários e perfis de acesso
                   </span>
                 </div>
 
@@ -17278,7 +18008,7 @@ function App() {
                         marginBottom: '16px',
                       }}
                     >
-                      Altere os dados do acesso. As mudanças são gravadas no Supabase Auth e no perfil real.
+                      Altere os dados, o perfil de acesso e as credenciais do usuário.
                     </span>
 
                     <div className="form-group" style={{ marginBottom: '11px' }}>
@@ -18107,6 +18837,84 @@ function App() {
             <div className="pix-modal-actions">
               <button className="secondary-button" onClick={() => setDiariaEditando(null)}>Cancelar</button>
               <button className="primary-button" onClick={salvarEdicaoDiaria}>Salvar diária</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cadastroFacialAberto && funcionarioCadastroFacial && (
+        <div className="modal-overlay" onClick={fecharCadastroFacial}>
+          <div
+            className="pix-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '650px', width: 'calc(100% - 28px)' }}
+          >
+            <div className="pix-modal-header">
+              <div>
+                <span style={{ color: '#8f8694', fontSize: '9px', fontWeight: 800 }}>BIOMETRIA FACIAL</span>
+                <h3 style={{ margin: '4px 0 0' }}>{funcionarioCadastroFacial.nome}</h3>
+              </div>
+              <button className="secondary-button" onClick={fecharCadastroFacial}>Fechar</button>
+            </div>
+
+            <div style={{ marginTop: '14px', padding: '11px 12px', borderRadius: '12px', background: modelosFaciaisProntos ? '#eef8f2' : erroModelosFaciais ? '#fff0f0' : '#fff8e8', border: `1px solid ${modelosFaciaisProntos ? '#cfe8d8' : erroModelosFaciais ? '#efcccc' : '#efdfbb'}`, color: modelosFaciaisProntos ? '#2d6847' : erroModelosFaciais ? '#a84444' : '#856525', fontSize: '10px', lineHeight: 1.5 }}>
+              {modelosFaciaisProntos
+                ? 'Motor facial carregado e pronto para captura.'
+                : erroModelosFaciais || 'Carregando os modelos faciais...'}
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', marginTop: '14px', padding: '11px 12px', borderRadius: '12px', background: '#f8f5fa', color: '#655a69', fontSize: '10px', lineHeight: 1.45, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={consentimentoFacial}
+                onChange={(e) => setConsentimentoFacial(e.target.checked)}
+                disabled={cameraFacialAtiva || capturandoFacial}
+                style={{ marginTop: '2px' }}
+              />
+              <span>Confirmo que o trabalhador foi informado sobre a coleta e o uso da biometria facial para identificação no registro de ponto e autorizou este cadastro.</span>
+            </label>
+
+            <div style={{ marginTop: '14px', minHeight: '330px', borderRadius: '18px', overflow: 'hidden', background: '#17121b', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {cameraFacialAtiva ? (
+                <>
+                  <video
+                    ref={videoCadastroFacialRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{ width: '100%', height: '100%', minHeight: '330px', objectFit: 'cover', transform: 'scaleX(-1)' }}
+                  />
+                  <div style={{ position: 'absolute', width: '190px', height: '245px', borderRadius: '50%', border: '3px solid rgba(255,255,255,.82)', boxShadow: '0 0 0 999px rgba(0,0,0,.16)', pointerEvents: 'none' }} />
+                  {capturandoFacial && (
+                    <div style={{ position: 'absolute', left: '16px', right: '16px', bottom: '16px', padding: '11px 13px', borderRadius: '12px', background: 'rgba(24,18,28,.82)', color: '#fff', fontSize: '10px', fontWeight: 800 }}>
+                      Capturando amostra {Math.min(progressoFacial + 1, 5)} de 5...
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ color: '#cfc6d3', textAlign: 'center', padding: '30px' }}>
+                  <div style={{ fontSize: '48px', marginBottom: '10px' }}>◉</div>
+                  <strong style={{ display: 'block', color: '#fff', marginBottom: '6px' }}>Câmera aguardando</strong>
+                  <span style={{ fontSize: '10px' }}>Confirme o consentimento e abra a câmera.</span>
+                </div>
+              )}
+            </div>
+
+            <p style={{ margin: '12px 0 0', color: '#786d7d', fontSize: '10px', lineHeight: 1.5 }}>
+              {mensagemFacial || 'Serão coletadas cinco amostras do rosto e transformadas em um descritor numérico para comparação facial.'}
+            </p>
+
+            <div className="pix-modal-actions">
+              {cameraFacialAtiva ? (
+                <>
+                  <button className="secondary-button" onClick={encerrarCameraCadastroFacial} disabled={capturandoFacial}>Desligar câmera</button>
+                  <button className="primary-button" onClick={capturarCadastroFacial} disabled={capturandoFacial || !modelosFaciaisProntos}>
+                    {capturandoFacial ? `Capturando ${progressoFacial}/5` : 'Capturar e salvar biometria'}
+                  </button>
+                </>
+              ) : (
+                <button className="primary-button" onClick={iniciarCameraCadastroFacial} disabled={!consentimentoFacial || !modelosFaciaisProntos}>Abrir câmera</button>
+              )}
             </div>
           </div>
         </div>
