@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { supabase } from './supabase'
 
 type Tela =
   | 'operacao'
@@ -27,6 +28,7 @@ type Notificacao = {
 }
 
 type Funcionario = {
+  id?: string
   nome: string
   cpf: string
   nascimento: string
@@ -45,12 +47,35 @@ type Funcionario = {
 }
 
 type RegistroPonto = {
+  id?: string
+  employeeId?: string
   nome: string
   funcao: string
   data: string
   horario: string
   status: 'Registrado' | 'Pendente'
-  metodo?: 'Reconhecimento facial' | 'Manual'
+  metodo?: string
+  tipoRegistro?: 'Entrada' | 'Saída'
+  facialVerificada?: boolean
+  confiancaFacial?: number | null
+  observacao?: string
+}
+
+type RegistroPontoSupabase = {
+  id: string
+  employee_id: string
+  occurred_at: string
+  record_type: 'Entrada' | 'Saída'
+  source: 'Manual' | 'Facial' | 'Importação' | 'Sistema'
+  facial_verified: boolean
+  facial_confidence: number | string | null
+  observation: string | null
+  employee?: {
+    id: string
+    full_name: string
+    job_title: string
+    status: 'Ativo' | 'Inativo'
+  } | null
 }
 
 type ListaDiaristas = {
@@ -64,6 +89,8 @@ type ListaDiaristas = {
 }
 
 type Diaria = {
+  id?: string
+  employeeId?: string
   nome: string
   funcao: string
   data: string
@@ -73,38 +100,120 @@ type Diaria = {
   vt: number
   vr: number
   valor: number
-  status: 'Aprovada' | 'Pendente'
+  status: 'Pendente' | 'Conferida' | 'Aprovada' | 'Cancelada'
+  geradaPor?: 'Manual' | 'Ponto' | 'Importação' | 'Sistema'
+  observacao?: string
+}
+
+type DiariaSupabase = {
+  id: string
+  employee_id: string
+  work_date: string
+  base_amount: number | string
+  additional_amount: number | string
+  transport_amount: number | string
+  meal_amount: number | string
+  total_amount: number | string
+  day_type: 'Útil' | 'Sábado' | 'Domingo' | 'Feriado'
+  status: 'Pendente' | 'Conferida' | 'Aprovada' | 'Cancelada'
+  generated_from: 'Manual' | 'Ponto' | 'Importação' | 'Sistema'
+  observation: string | null
+  employee?: {
+    id: string
+    full_name: string
+    job_title: string
+  } | null
 }
 
 type StatusFechamento =
-  | 'Aberto'
-  | 'Em revisão'
+  | 'Em conferência'
   | 'Aprovado'
-  | 'Aguardando pagamento'
+  | 'Enviado para pagamento'
   | 'Pago'
+  | 'Reaberto'
 
 type Fechamento = {
+  id?: string
   periodo: string
   pagamento: string
   status: StatusFechamento
+  startDate?: string
+  endDate?: string
+  totalDaily?: number
+  totalTransport?: number
+  totalMeal?: number
+  totalAmount?: number
+  dailyRecordIds?: string[]
+}
+
+type FechamentoSupabase = {
+  id: string
+  start_date: string
+  end_date: string
+  status: StatusFechamento
+  total_daily: number | string
+  total_transport: number | string
+  total_meal: number | string
+  total_amount: number | string
 }
 
 type Pagamento = {
+  id?: string
+  employeeId?: string
+  closingId?: string
   nome: string
   periodo: string
   quantidadeDiarias: number
   valorTotal: number
   pix: string
-  status: 'Aguardando' | 'Pago'
+  status: 'Aguardando' | 'Processando' | 'Pago' | 'Falhou' | 'Cancelado'
   dataPagamento: string
 }
 
+type PagamentoSupabase = {
+  id: string
+  employee_id: string
+  closing_id: string | null
+  amount: number | string
+  payment_method: 'PIX' | 'Transferência' | 'Dinheiro' | 'Outro'
+  status: 'Pendente' | 'Processando' | 'Pago' | 'Falhou' | 'Cancelado'
+  pix_key_snapshot: string | null
+  pix_holder_snapshot: string | null
+  transaction_reference: string | null
+  paid_at: string | null
+  observation: string | null
+  employee?: { full_name: string } | { full_name: string }[] | null
+  closing?: { start_date: string; end_date: string } | { start_date: string; end_date: string }[] | null
+}
+
 type Documento = {
+  id?: string
+  employeeId?: string
   nome: string
+  titulo: string
   funcionario: string
   tipo: string
   dataEnvio: string
-  status: 'Enviado' | 'Pendente'
+  validade: string
+  status: 'Ativo' | 'Expirado' | 'Arquivado'
+  storagePath?: string
+  mimeType?: string
+  tamanho?: number
+}
+
+type DocumentoSupabase = {
+  id: string
+  employee_id: string
+  document_type: string
+  title: string
+  storage_path: string
+  original_filename: string | null
+  mime_type: string | null
+  file_size: number | string | null
+  expires_at: string | null
+  status: 'Ativo' | 'Expirado' | 'Arquivado'
+  created_at: string
+  employee?: { full_name: string } | { full_name: string }[] | null
 }
 
 type ConfiguracaoValores = {
@@ -114,28 +223,49 @@ type ConfiguracaoValores = {
   percentualFeriado: number
   vt: number
   vr: number
+  horarioEntradaPadrao: string
+  horarioSaidaPadrao: string
 }
 
-type TipoFeriado = 'Nacional' | 'Estadual' | 'Municipal' | 'Empresa'
+type TipoFeriado = 'Nacional' | 'Estadual' | 'Municipal' | 'Interno'
 
 type Feriado = {
-  id: number
+  id: string
   data: string
   nome: string
   tipo: TipoFeriado
   ativo: boolean
 }
 
+type FeriadoSupabase = {
+  id: string
+  holiday_date: string
+  name: string
+  holiday_type: TipoFeriado
+  active: boolean
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
 type PerfilAcesso = 'Administrador' | 'Supervisor' | 'Consulta'
 
 type UsuarioSistema = {
   id: number
+  authId?: string
   nome: string
   usuario: string
   senha: string
+  email: string
+  celular: string
   perfil: PerfilAcesso
   status: 'Ativo' | 'Inativo'
   ultimoAcesso: string
+  tentativasFalhas?: number
+  bloqueadoAte?: number | null
+  criadoEm?: string
+  criadoPor?: string
+  senhaAlteradaEm?: string
 }
 
 type RegistroAuditoria = {
@@ -147,6 +277,24 @@ type RegistroAuditoria = {
   modulo: string
   detalhe: string
   nivel: 'Informação' | 'Atenção' | 'Crítico'
+  entidade?: string
+  entityId?: string
+  ip?: string
+}
+
+type RegistroAuditoriaSupabase = {
+  id: number
+  user_id: string | null
+  user_name: string | null
+  user_role: string | null
+  action: string
+  module: string
+  details: string | null
+  severity: 'Informação' | 'Atenção' | 'Crítico'
+  entity_type: string | null
+  entity_id: string | null
+  ip_address: string | null
+  created_at: string
 }
 
 const funcionarioVazio: Funcionario = {
@@ -165,6 +313,81 @@ const funcionarioVazio: Funcionario = {
   titularPix: '',
   foto: '',
   facial: 'Pendente',
+}
+
+type FuncionarioSupabase = {
+  id: string
+  full_name: string
+  cpf: string
+  birth_date: string | null
+  phone: string | null
+  email: string | null
+  address: string | null
+  hire_date: string | null
+  job_title: string
+  status: 'Ativo' | 'Inativo'
+  daily_rate: number | string
+  pix_type: string | null
+  pix_key: string | null
+  pix_holder: string | null
+  photo_path: string | null
+  facial_status: 'Cadastrado' | 'Pendente'
+}
+
+function valorDiariaFormatado(valor: number | string) {
+  const numero = Number(valor || 0)
+  return numero.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  })
+}
+
+function somenteDigitos(valor: string) {
+  return String(valor || '').replace(/\D/g, '')
+}
+
+function formatarCpf(valor: string) {
+  const digitos = somenteDigitos(valor).slice(0, 11)
+
+  return digitos
+    .replace(/^(\d{3})(\d)/, '$1.$2')
+    .replace(/^(\d{3})\.(\d{3})(\d)/, '$1.$2.$3')
+    .replace(/\.(\d{3})(\d)/, '.$1-$2')
+}
+
+function formatarTelefone(valor: string) {
+  const digitos = somenteDigitos(valor).slice(0, 11)
+
+  if (digitos.length <= 2) return digitos
+  if (digitos.length <= 6) return `(${digitos.slice(0, 2)}) ${digitos.slice(2)}`
+
+  if (digitos.length <= 10) {
+    return `(${digitos.slice(0, 2)}) ${digitos.slice(2, 6)}-${digitos.slice(6)}`
+  }
+
+  return `(${digitos.slice(0, 2)}) ${digitos.slice(2, 7)}-${digitos.slice(7)}`
+}
+
+function funcionarioDoSupabase(registro: FuncionarioSupabase): Funcionario {
+  return {
+    id: registro.id,
+    nome: registro.full_name,
+    cpf: formatarCpf(registro.cpf),
+    nascimento: registro.birth_date || '',
+    telefone: formatarTelefone(registro.phone || ''),
+    email: registro.email || '',
+    endereco: registro.address || '',
+    admissao: registro.hire_date || '',
+    funcao: registro.job_title || 'Auxiliar Logístico',
+    diaria: valorDiariaFormatado(registro.daily_rate),
+    status: registro.status === 'Inativo' ? 'Inativo' : 'Ativo',
+    tipoPix: registro.pix_type || '',
+    chavePix: registro.pix_key || '',
+    titularPix: registro.pix_holder || '',
+    foto: registro.photo_path || '',
+    facial:
+      registro.facial_status === 'Cadastrado' ? 'Cadastrado' : 'Pendente',
+  }
 }
 
 function App() {
@@ -186,6 +409,8 @@ function App() {
       nome: 'Administrador Geral',
       usuario: 'admin',
       senha: '1234',
+      email: 'admin@sindicato.local',
+      celular: '(19) 99999-0001',
       perfil: 'Administrador',
       status: 'Ativo',
       ultimoAcesso: 'Agora',
@@ -195,6 +420,8 @@ function App() {
       nome: 'Supervisor Operacional',
       usuario: 'supervisor',
       senha: '1234',
+      email: 'supervisor@sindicato.local',
+      celular: '(19) 99999-0002',
       perfil: 'Supervisor',
       status: 'Ativo',
       ultimoAcesso: 'Hoje, 08:52',
@@ -204,6 +431,8 @@ function App() {
       nome: 'Consulta Sindical',
       usuario: 'consulta',
       senha: '1234',
+      email: 'consulta@sindicato.local',
+      celular: '(19) 99999-0003',
       perfil: 'Consulta',
       status: 'Ativo',
       ultimoAcesso: 'Ontem, 16:20',
@@ -252,12 +481,51 @@ function App() {
   const [mostrarNovoUsuario, setMostrarNovoUsuario] = useState(false)
   const [novoUsuarioNome, setNovoUsuarioNome] = useState('')
   const [novoUsuarioLogin, setNovoUsuarioLogin] = useState('')
+  const [novoUsuarioEmail, setNovoUsuarioEmail] = useState('')
+  const [novoUsuarioCelular, setNovoUsuarioCelular] = useState('')
   const [novoUsuarioSenha, setNovoUsuarioSenha] = useState('')
+  const [novoUsuarioConfirmarSenha, setNovoUsuarioConfirmarSenha] = useState('')
   const [novoUsuarioPerfil, setNovoUsuarioPerfil] =
     useState<PerfilAcesso>('Supervisor')
+  const [novoUsuarioStatus, setNovoUsuarioStatus] =
+    useState<UsuarioSistema['status']>('Ativo')
+
+  const [usuarioEditandoId, setUsuarioEditandoId] = useState<number | null>(null)
+  const [usuarioEditandoNome, setUsuarioEditandoNome] = useState('')
+  const [usuarioEditandoLogin, setUsuarioEditandoLogin] = useState('')
+  const [usuarioEditandoEmail, setUsuarioEditandoEmail] = useState('')
+  const [usuarioEditandoCelular, setUsuarioEditandoCelular] = useState('')
+  const [usuarioEditandoPerfil, setUsuarioEditandoPerfil] =
+    useState<PerfilAcesso>('Supervisor')
+  const [usuarioEditandoStatus, setUsuarioEditandoStatus] =
+    useState<UsuarioSistema['status']>('Ativo')
+  const [usuarioEditandoNovaSenha, setUsuarioEditandoNovaSenha] = useState('')
+  const [usuarioEditandoConfirmarSenha, setUsuarioEditandoConfirmarSenha] = useState('')
+
+  const [recuperacaoAberta, setRecuperacaoAberta] = useState(false)
+  const [recuperacaoEtapa, setRecuperacaoEtapa] = useState<'identificacao' | 'codigo' | 'novaSenha'>('identificacao')
+  const [recuperacaoIdentificador, setRecuperacaoIdentificador] = useState('')
+  const [recuperacaoCanal, setRecuperacaoCanal] = useState<'email' | 'sms'>('email')
+  const [recuperacaoUsuarioId, setRecuperacaoUsuarioId] = useState<number | null>(null)
+  const [recuperacaoCodigoGerado, setRecuperacaoCodigoGerado] = useState('')
+  const [recuperacaoCodigoDigitado, setRecuperacaoCodigoDigitado] = useState('')
+  const [recuperacaoCodigoExpiraEm, setRecuperacaoCodigoExpiraEm] = useState<number | null>(null)
+  const [recuperacaoTentativasCodigo, setRecuperacaoTentativasCodigo] = useState(0)
+  const [recuperacaoNovaSenha, setRecuperacaoNovaSenha] = useState('')
+  const [recuperacaoConfirmarSenha, setRecuperacaoConfirmarSenha] = useState('')
+  const [mostrarAlterarMinhaSenha, setMostrarAlterarMinhaSenha] = useState(false)
+  const [minhaSenhaAtual, setMinhaSenhaAtual] = useState('')
+  const [minhaNovaSenha, setMinhaNovaSenha] = useState('')
+  const [minhaConfirmarSenha, setMinhaConfirmarSenha] = useState('')
 
   const [notificacao, setNotificacao] = useState<Notificacao | null>(null)
   const timerNotificacao = useRef<number | null>(null)
+  const inputBackupRef = useRef<HTMLInputElement | null>(null)
+
+  const [diariaEditando, setDiariaEditando] = useState<{
+    index: number
+    diaria: Diaria
+  } | null>(null)
 
   const [mostrarFormulario, setMostrarFormulario] = useState(false)
   const [mostrarDocumento, setMostrarDocumento] = useState(false)
@@ -273,7 +541,7 @@ function App() {
     useState<string | null>(null)
 
   const [fechamentoSelecionado, setFechamentoSelecionado] =
-    useState<string | null>(null)
+    useState<number | null>(null)
 
   const [pagamentoPixSelecionado, setPagamentoPixSelecionado] =
     useState<Pagamento | null>(null)
@@ -372,6 +640,8 @@ function App() {
       percentualFeriado: 100,
       vt: 12,
       vr: 26,
+      horarioEntradaPadrao: '09:30',
+      horarioSaidaPadrao: '18:30',
     })
 
   const [configuracaoTemporaria, setConfiguracaoTemporaria] =
@@ -382,19 +652,11 @@ function App() {
       percentualFeriado: 100,
       vt: 12,
       vr: 26,
+      horarioEntradaPadrao: '09:30',
+      horarioSaidaPadrao: '18:30',
     })
 
-  const [feriados, setFeriados] = useState<Feriado[]>([
-    { id: 1, data: '2026-01-01', nome: 'Confraternização Universal', tipo: 'Nacional', ativo: true },
-    { id: 2, data: '2026-04-21', nome: 'Tiradentes', tipo: 'Nacional', ativo: true },
-    { id: 3, data: '2026-05-01', nome: 'Dia Mundial do Trabalho', tipo: 'Nacional', ativo: true },
-    { id: 4, data: '2026-09-07', nome: 'Independência do Brasil', tipo: 'Nacional', ativo: true },
-    { id: 5, data: '2026-10-12', nome: 'Nossa Senhora Aparecida', tipo: 'Nacional', ativo: true },
-    { id: 6, data: '2026-11-02', nome: 'Finados', tipo: 'Nacional', ativo: true },
-    { id: 7, data: '2026-11-15', nome: 'Proclamação da República', tipo: 'Nacional', ativo: true },
-    { id: 8, data: '2026-11-20', nome: 'Dia Nacional de Zumbi e da Consciência Negra', tipo: 'Nacional', ativo: true },
-    { id: 9, data: '2026-12-25', nome: 'Natal', tipo: 'Nacional', ativo: true },
-  ])
+  const [feriados, setFeriados] = useState<Feriado[]>([])
   const [mesCalendario, setMesCalendario] = useState(new Date(2026, 7, 1))
   const [novoFeriadoData, setNovoFeriadoData] = useState('')
   const [novoFeriadoNome, setNovoFeriadoNome] = useState('')
@@ -503,168 +765,16 @@ function App() {
   const [novoFuncionario, setNovoFuncionario] =
     useState<Funcionario>(funcionarioVazio)
 
-  const [registrosPonto, setRegistrosPonto] = useState<RegistroPonto[]>([
-    {
-      nome: 'João da Silva',
-      funcao: 'Auxiliar Logístico',
-      data: new Date().toLocaleDateString('pt-BR'),
-      horario: '09:27',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-    {
-      nome: 'Maria Oliveira',
-      funcao: 'Auxiliar Logístico',
-      data: new Date().toLocaleDateString('pt-BR'),
-      horario: '09:31',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-    {
-      nome: 'Pedro Almeida',
-      funcao: 'Auxiliar Logístico',
-      data: new Date().toLocaleDateString('pt-BR'),
-      horario: '--:--',
-      status: 'Pendente',
-    },
-    {
-      nome: 'Lucas Ferreira',
-      funcao: 'Auxiliar Logístico',
-      data: new Date().toLocaleDateString('pt-BR'),
-      horario: '09:34',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-    {
-      nome: 'João da Silva',
-      funcao: 'Auxiliar Logístico',
-      data: '29/08/2026',
-      horario: '09:28',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-    {
-      nome: 'Maria Oliveira',
-      funcao: 'Auxiliar Logístico',
-      data: '29/08/2026',
-      horario: '09:33',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-    {
-      nome: 'Pedro Almeida',
-      funcao: 'Auxiliar Logístico',
-      data: '28/08/2026',
-      horario: '09:29',
-      status: 'Registrado',
-      metodo: 'Reconhecimento facial',
-    },
-  ])
+  const [editandoFuncionario, setEditandoFuncionario] = useState(false)
+  const [funcionarioEmEdicao, setFuncionarioEmEdicao] =
+    useState<Funcionario | null>(null)
+  const [cpfOriginalEdicao, setCpfOriginalEdicao] = useState('')
 
-  const [diarias, setDiarias] = useState<Diaria[]>([
-    {
-      nome: 'João da Silva',
-      funcao: 'Auxiliar Logístico',
-      data: '25/08/2026',
-      tipoDia: 'Semana',
-      diariaBase: 100,
-      adicional: 0,
-      vt: 12,
-      vr: 26,
-      valor: 138,
-      status: 'Aprovada',
-    },
-    {
-      nome: 'João da Silva',
-      funcao: 'Auxiliar Logístico',
-      data: '26/08/2026',
-      tipoDia: 'Semana',
-      diariaBase: 100,
-      adicional: 0,
-      vt: 12,
-      vr: 26,
-      valor: 138,
-      status: 'Aprovada',
-    },
-    {
-      nome: 'João da Silva',
-      funcao: 'Auxiliar Logístico',
-      data: '29/08/2026',
-      tipoDia: 'Sábado',
-      diariaBase: 100,
-      adicional: 50,
-      vt: 12,
-      vr: 26,
-      valor: 188,
-      status: 'Pendente',
-    },
-    {
-      nome: 'Maria Oliveira',
-      funcao: 'Auxiliar Logístico',
-      data: '27/08/2026',
-      tipoDia: 'Semana',
-      diariaBase: 100,
-      adicional: 0,
-      vt: 12,
-      vr: 26,
-      valor: 138,
-      status: 'Aprovada',
-    },
-    {
-      nome: 'Maria Oliveira',
-      funcao: 'Auxiliar Logístico',
-      data: '29/08/2026',
-      tipoDia: 'Sábado',
-      diariaBase: 100,
-      adicional: 50,
-      vt: 12,
-      vr: 26,
-      valor: 188,
-      status: 'Aprovada',
-    },
-    {
-      nome: 'Lucas Ferreira',
-      funcao: 'Auxiliar Logístico',
-      data: '30/08/2026',
-      tipoDia: 'Domingo',
-      diariaBase: 100,
-      adicional: 100,
-      vt: 12,
-      vr: 26,
-      valor: 238,
-      status: 'Aprovada',
-    },
-    {
-      nome: 'Pedro Almeida',
-      funcao: 'Auxiliar Logístico',
-      data: '28/08/2026',
-      tipoDia: 'Semana',
-      diariaBase: 100,
-      adicional: 0,
-      vt: 12,
-      vr: 26,
-      valor: 138,
-      status: 'Pendente',
-    },
-  ])
+  const [registrosPonto, setRegistrosPonto] = useState<RegistroPonto[]>([])
 
-  const [fechamentos, setFechamentos] = useState<Fechamento[]>([
-    {
-      periodo: '01/08/2026 a 15/08/2026',
-      pagamento: '20/08/2026',
-      status: 'Pago',
-    },
-    {
-      periodo: '16/08/2026 a 31/08/2026',
-      pagamento: '05/09/2026',
-      status: 'Em revisão',
-    },
-    {
-      periodo: '01/09/2026 a 15/09/2026',
-      pagamento: '20/09/2026',
-      status: 'Aberto',
-    },
-  ])
+  const [diarias, setDiarias] = useState<Diaria[]>([])
+
+  const [fechamentos, setFechamentos] = useState<Fechamento[]>([])
 
   const [pagamentos, setPagamentos] = useState<Pagamento[]>([
     {
@@ -723,42 +833,18 @@ function App() {
     },
   ])
 
-  const [documentos, setDocumentos] = useState<Documento[]>([
-    {
-      nome: 'Contrato de Trabalho.pdf',
-      funcionario: 'João da Silva',
-      tipo: 'Contrato',
-      dataEnvio: '10/08/2026',
-      status: 'Enviado',
-    },
-    {
-      nome: 'RG.pdf',
-      funcionario: 'João da Silva',
-      tipo: 'RG',
-      dataEnvio: '10/08/2026',
-      status: 'Enviado',
-    },
-    {
-      nome: 'CPF.pdf',
-      funcionario: 'Maria Oliveira',
-      tipo: 'CPF',
-      dataEnvio: '12/08/2026',
-      status: 'Enviado',
-    },
-    {
-      nome: 'Comprovante de residência',
-      funcionario: 'Maria Oliveira',
-      tipo: 'Comprovante',
-      dataEnvio: '-',
-      status: 'Pendente',
-    },
-  ])
+  const [documentos, setDocumentos] = useState<Documento[]>([])
 
   const [novoDocumento, setNovoDocumento] = useState({
     funcionario: '',
     tipo: '',
+    titulo: '',
+    validade: '',
     nomeArquivo: '',
+    arquivo: null as File | null,
   })
+
+  const [enviandoDocumento, setEnviandoDocumento] = useState(false)
 
   const armazenamentoCarregado = useRef(false)
   const [ultimaSincronizacaoLocal, setUltimaSincronizacaoLocal] =
@@ -773,80 +859,12 @@ function App() {
       if (dadosSalvos) {
         const dados = JSON.parse(dadosSalvos)
 
-        if (Array.isArray(dados.funcionarios)) {
-          setFuncionarios(dados.funcionarios)
-        }
-
-        if (Array.isArray(dados.registrosPonto)) {
-          setRegistrosPonto(dados.registrosPonto)
-        }
-
-        if (Array.isArray(dados.diarias)) {
-          setDiarias(dados.diarias)
-        }
-
-        if (Array.isArray(dados.fechamentos)) {
-          setFechamentos(dados.fechamentos)
-        }
-
-        if (Array.isArray(dados.pagamentos)) {
-          setPagamentos(dados.pagamentos)
-        }
-
-        if (Array.isArray(dados.documentos)) {
-          setDocumentos(dados.documentos)
-        }
-
+        // Beta 2.8:
+        // O navegador mantém temporariamente apenas os módulos que ainda
+        // não foram migrados para o backend real. Dados operacionais e
+        // financeiros passam a vir exclusivamente do Supabase.
         if (Array.isArray(dados.listasDiaristas)) {
           setListasDiaristas(dados.listasDiaristas)
-        }
-
-        if (Array.isArray(dados.usuariosSistema)) {
-          setUsuariosSistema(dados.usuariosSistema)
-        }
-
-        if (Array.isArray(dados.registrosAuditoria)) {
-          setRegistrosAuditoria(dados.registrosAuditoria)
-        }
-
-        if (Array.isArray(dados.feriados)) {
-          setFeriados(dados.feriados)
-        }
-
-        if (
-          dados.configuracaoValores &&
-          typeof dados.configuracaoValores === 'object'
-        ) {
-          const anterior = dados.configuracaoValores
-          const base =
-            Number(anterior.diariaBase) > 0 ? Number(anterior.diariaBase) : 100
-
-          const configuracaoMigrada: ConfiguracaoValores = {
-            diariaBase: base,
-            percentualSabado:
-              typeof anterior.percentualSabado === 'number'
-                ? anterior.percentualSabado
-                : typeof anterior.adicionalSabado === 'number'
-                ? (anterior.adicionalSabado / base) * 100
-                : 50,
-            percentualDomingo:
-              typeof anterior.percentualDomingo === 'number'
-                ? anterior.percentualDomingo
-                : typeof anterior.adicionalDomingo === 'number'
-                ? (anterior.adicionalDomingo / base) * 100
-                : 100,
-            percentualFeriado:
-              typeof anterior.percentualFeriado === 'number'
-                ? anterior.percentualFeriado
-                : typeof anterior.adicionalFeriado === 'number'
-                ? (anterior.adicionalFeriado / base) * 100
-                : 100,
-            vt: Number(anterior.vt) || 0,
-            vr: Number(anterior.vr) || 0,
-          }
-
-          setConfiguracaoValores(configuracaoMigrada)
-          setConfiguracaoTemporaria(configuracaoMigrada)
         }
 
         if (typeof dados.salvoEm === 'string') {
@@ -854,12 +872,565 @@ function App() {
         }
       }
     } catch (erro) {
-      console.error('Não foi possível carregar os dados locais:', erro)
+      console.error('Não foi possível carregar os dados legados do navegador:', erro)
+    } finally {
+      armazenamentoCarregado.current = true
+    }
+  }, [])
+
+  async function carregarConfiguracoesSupabase() {
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('setting_value')
+      .eq('setting_key', 'daily_rules')
+      .maybeSingle()
+
+    if (error) {
+      console.error('Não foi possível carregar as configurações do Supabase:', error)
+      mostrarNotificacao('Não foi possível carregar as configurações do sistema.', 'error')
+      return
     }
 
-    window.setTimeout(() => {
-      armazenamentoCarregado.current = true
-    }, 0)
+    if (!data?.setting_value || typeof data.setting_value !== 'object') return
+
+    const valor = data.setting_value as Record<string, unknown>
+    const configuracao: ConfiguracaoValores = {
+      diariaBase: Number(valor.dailyBase ?? 100),
+      percentualSabado: Number(valor.saturdayPercentage ?? 50),
+      percentualDomingo: Number(valor.sundayPercentage ?? 100),
+      percentualFeriado: Number(valor.holidayPercentage ?? 100),
+      vt: Number(valor.transport ?? 12),
+      vr: Number(valor.meal ?? 26),
+      horarioEntradaPadrao: String(valor.standardStart ?? '09:30'),
+      horarioSaidaPadrao: String(valor.standardEnd ?? '18:30'),
+    }
+
+    setConfiguracaoValores(configuracao)
+    setConfiguracaoTemporaria(configuracao)
+  }
+
+  async function carregarFeriadosSupabase() {
+    const { data, error } = await supabase
+      .from('holidays')
+      .select('id, holiday_date, name, holiday_type, active, created_by, created_at, updated_at')
+      .order('holiday_date', { ascending: true })
+
+    if (error) {
+      console.error('Não foi possível carregar os feriados do Supabase:', error)
+      mostrarNotificacao(`Não foi possível carregar os feriados: ${error.message}`, 'error')
+      return
+    }
+
+    const feriadosReais = ((data || []) as FeriadoSupabase[]).map((feriado) => ({
+      id: feriado.id,
+      data: feriado.holiday_date,
+      nome: feriado.name,
+      tipo: feriado.holiday_type,
+      ativo: feriado.active,
+    }))
+
+    setFeriados(feriadosReais)
+  }
+
+  async function carregarAuditoriaSupabase() {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      setRegistrosAuditoria([])
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select(
+        'id, user_id, user_name, user_role, action, module, details, severity, entity_type, entity_id, ip_address, created_at'
+      )
+      .order('created_at', { ascending: false })
+      .limit(500)
+
+    if (error) {
+      console.error('Não foi possível carregar a auditoria do Supabase:', error)
+      mostrarNotificacao(
+        `Não foi possível carregar a auditoria: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    const registros = ((data || []) as RegistroAuditoriaSupabase[]).map(
+      (registro) => ({
+        id: Number(registro.id),
+        dataHora: new Date(registro.created_at).toLocaleString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+        }),
+        usuario: registro.user_name || 'Sistema',
+        perfil: (registro.user_role || 'Sistema') as PerfilAcesso | 'Sistema',
+        acao: registro.action,
+        modulo: registro.module,
+        detalhe: registro.details || '-',
+        nivel: registro.severity,
+        entidade: registro.entity_type || undefined,
+        entityId: registro.entity_id || undefined,
+        ip: registro.ip_address || undefined,
+      })
+    )
+
+    setRegistrosAuditoria(registros)
+  }
+
+  async function carregarFuncionariosSupabase() {
+    const { data, error } = await supabase
+      .from('employees')
+      .select(
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+      )
+      .order('full_name', { ascending: true })
+
+    if (error) {
+      console.error('Não foi possível carregar os funcionários do Supabase:', error)
+      mostrarNotificacao(
+        `Não foi possível carregar os funcionários: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    const registros = (data || []) as FuncionarioSupabase[]
+    setFuncionarios(registros.map(funcionarioDoSupabase))
+  }
+
+  async function carregarDocumentosSupabase() {
+    const { data, error } = await supabase
+      .from('employee_documents')
+      .select(
+        'id, employee_id, document_type, title, storage_path, original_filename, mime_type, file_size, expires_at, status, created_at, employee:employees!employee_documents_employee_id_fkey(full_name)'
+      )
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      console.error('Não foi possível carregar os documentos do Supabase:', error)
+      mostrarNotificacao(
+        `Não foi possível carregar os documentos: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    const registros = ((data || []) as unknown as DocumentoSupabase[]).map((registro) => {
+      const empregado = Array.isArray(registro.employee)
+        ? registro.employee[0]
+        : registro.employee
+
+      return {
+        id: registro.id,
+        employeeId: registro.employee_id,
+        nome: registro.original_filename || registro.title,
+        titulo: registro.title,
+        funcionario: empregado?.full_name || 'Funcionário',
+        tipo: registro.document_type,
+        dataEnvio: new Date(registro.created_at).toLocaleDateString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+        }),
+        validade: registro.expires_at ? dataBancoParaBR(registro.expires_at) : '-',
+        status: registro.status,
+        storagePath: registro.storage_path,
+        mimeType: registro.mime_type || '',
+        tamanho: Number(registro.file_size) || 0,
+      } satisfies Documento
+    })
+
+    setDocumentos(registros)
+  }
+
+  function dataISOEmSaoPaulo(data: Date = new Date()) {
+    const partes = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(data)
+
+    const ano = partes.find((parte) => parte.type === 'year')?.value || ''
+    const mes = partes.find((parte) => parte.type === 'month')?.value || ''
+    const dia = partes.find((parte) => parte.type === 'day')?.value || ''
+    return `${ano}-${mes}-${dia}`
+  }
+
+  function dataBancoParaBR(data: string) {
+    const [ano, mes, dia] = data.split('-')
+    return ano && mes && dia ? `${dia}/${mes}/${ano}` : data
+  }
+
+  async function carregarDiariasSupabase() {
+    const { data, error } = await supabase
+      .from('daily_records')
+      .select(
+        'id, employee_id, work_date, base_amount, additional_amount, transport_amount, meal_amount, total_amount, day_type, status, generated_from, observation, employee:employees!daily_records_employee_id_fkey(id, full_name, job_title)'
+      )
+      .order('work_date', { ascending: false })
+
+    if (error) {
+      console.error('Não foi possível carregar as diárias do Supabase:', error)
+      mostrarNotificacao(
+        `Não foi possível carregar as diárias: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    const registros = ((data || []) as unknown as DiariaSupabase[]).map((registro) => {
+      const empregado = Array.isArray(registro.employee)
+        ? registro.employee[0]
+        : registro.employee
+
+      return {
+        id: registro.id,
+        employeeId: registro.employee_id,
+        nome: empregado?.full_name || 'Funcionário',
+        funcao: empregado?.job_title || 'Auxiliar Logístico',
+        data: dataBancoParaBR(registro.work_date),
+        tipoDia: registro.day_type === 'Útil' ? 'Semana' as const : registro.day_type,
+        diariaBase: Number(registro.base_amount) || 0,
+        adicional: Number(registro.additional_amount) || 0,
+        vt: Number(registro.transport_amount) || 0,
+        vr: Number(registro.meal_amount) || 0,
+        valor: Number(registro.total_amount) || 0,
+        status: registro.status,
+        geradaPor: registro.generated_from,
+        observacao: registro.observation || '',
+      }
+    })
+
+    setDiarias(registros)
+  }
+
+
+  function dataISOParaDateLocal(dataISO: string) {
+    const [ano, mes, dia] = dataISO.split('-').map(Number)
+    return new Date(ano, (mes || 1) - 1, dia || 1, 12)
+  }
+
+  function pagamentoPrevistoPorPeriodo(startDate: string) {
+    const inicio = dataISOParaDateLocal(startDate)
+    const primeira = inicio.getDate() <= 15
+    const pagamento = primeira
+      ? new Date(inicio.getFullYear(), inicio.getMonth(), 20, 12)
+      : new Date(inicio.getFullYear(), inicio.getMonth() + 1, 5, 12)
+    return pagamento.toLocaleDateString('pt-BR')
+  }
+
+  async function carregarPagamentosSupabase() {
+    const [pagamentosResposta, vinculosResposta, diariasResposta] = await Promise.all([
+      supabase
+        .from('payments')
+        .select(
+          'id, employee_id, closing_id, amount, payment_method, status, pix_key_snapshot, pix_holder_snapshot, transaction_reference, paid_at, observation, employee:employees!payments_employee_id_fkey(full_name), closing:closings!payments_closing_id_fkey(start_date, end_date)'
+        )
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('closing_daily_records')
+        .select('closing_id, daily_record_id'),
+      supabase
+        .from('daily_records')
+        .select('id, employee_id'),
+    ])
+
+    if (pagamentosResposta.error) {
+      console.error('Não foi possível carregar os pagamentos do Supabase:', pagamentosResposta.error)
+      mostrarNotificacao(
+        `Não foi possível carregar os pagamentos: ${pagamentosResposta.error.message}`,
+        'error'
+      )
+      return
+    }
+
+    if (vinculosResposta.error) {
+      console.error('Não foi possível carregar os vínculos para contar diárias:', vinculosResposta.error)
+    }
+
+    if (diariasResposta.error) {
+      console.error('Não foi possível carregar as diárias para contar pagamentos:', diariasResposta.error)
+    }
+
+    const vinculos = (vinculosResposta.data || []) as Array<{
+      closing_id: string
+      daily_record_id: string
+    }>
+    const diariasMinimas = (diariasResposta.data || []) as Array<{
+      id: string
+      employee_id: string
+    }>
+
+    const registros = ((pagamentosResposta.data || []) as unknown as PagamentoSupabase[]).map((registro) => {
+      const empregado = Array.isArray(registro.employee)
+        ? registro.employee[0]
+        : registro.employee
+      const fechamento = Array.isArray(registro.closing)
+        ? registro.closing[0]
+        : registro.closing
+
+      const idsDiariasDoFechamento = vinculos
+        .filter((item) => item.closing_id === registro.closing_id)
+        .map((item) => item.daily_record_id)
+
+      const quantidadeDiarias = diariasMinimas.filter(
+        (item) =>
+          item.employee_id === registro.employee_id &&
+          idsDiariasDoFechamento.includes(item.id)
+      ).length
+
+      const periodo = fechamento
+        ? `${dataBancoParaBR(fechamento.start_date)} a ${dataBancoParaBR(fechamento.end_date)}`
+        : '-'
+
+      const statusTela: Pagamento['status'] =
+        registro.status === 'Pendente' ? 'Aguardando' : registro.status
+
+      return {
+        id: registro.id,
+        employeeId: registro.employee_id,
+        closingId: registro.closing_id || undefined,
+        nome: empregado?.full_name || 'Funcionário',
+        periodo,
+        quantidadeDiarias,
+        valorTotal: Number(registro.amount) || 0,
+        pix: registro.pix_key_snapshot || '-',
+        status: statusTela,
+        dataPagamento: registro.paid_at
+          ? new Date(registro.paid_at).toLocaleString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              dateStyle: 'short',
+              timeStyle: 'short',
+            })
+          : '-',
+      }
+    })
+
+    setPagamentos(registros)
+  }
+
+  async function carregarFechamentosSupabase() {
+    const [{ data: dadosFechamentos, error: erroFechamentos }, { data: vinculos, error: erroVinculos }] =
+      await Promise.all([
+        supabase
+          .from('closings')
+          .select('id, start_date, end_date, status, total_daily, total_transport, total_meal, total_amount')
+          .order('start_date', { ascending: false }),
+        supabase
+          .from('closing_daily_records')
+          .select('closing_id, daily_record_id'),
+      ])
+
+    if (erroFechamentos) {
+      console.error('Não foi possível carregar os fechamentos:', erroFechamentos)
+      mostrarNotificacao(`Não foi possível carregar os fechamentos: ${erroFechamentos.message}`, 'error')
+      return
+    }
+
+    if (erroVinculos) {
+      console.error('Não foi possível carregar os vínculos do fechamento:', erroVinculos)
+    }
+
+    const links = (vinculos || []) as Array<{ closing_id: string; daily_record_id: string }>
+    const registros = ((dadosFechamentos || []) as FechamentoSupabase[]).map((item) => ({
+      id: item.id,
+      periodo: `${dataBancoParaBR(item.start_date)} a ${dataBancoParaBR(item.end_date)}`,
+      pagamento: pagamentoPrevistoPorPeriodo(item.start_date),
+      status: item.status,
+      startDate: item.start_date,
+      endDate: item.end_date,
+      totalDaily: Number(item.total_daily) || 0,
+      totalTransport: Number(item.total_transport) || 0,
+      totalMeal: Number(item.total_meal) || 0,
+      totalAmount: Number(item.total_amount) || 0,
+      dailyRecordIds: links.filter((link) => link.closing_id === item.id).map((link) => link.daily_record_id),
+    }))
+
+    setFechamentos(registros)
+  }
+
+  async function carregarPontosSupabase() {
+    const [{ data: pontos, error: erroPontos }, { data: empregados, error: erroEmpregados }] =
+      await Promise.all([
+        supabase
+          .from('attendance_records')
+          .select(
+            'id, employee_id, occurred_at, record_type, source, facial_verified, facial_confidence, observation, employee:employees!attendance_records_employee_id_fkey(id, full_name, job_title, status)'
+          )
+          .order('occurred_at', { ascending: false }),
+        supabase
+          .from('employees')
+          .select('id, full_name, job_title, status')
+          .eq('status', 'Ativo')
+          .order('full_name', { ascending: true }),
+      ])
+
+    if (erroPontos) {
+      console.error('Não foi possível carregar os registros de ponto:', erroPontos)
+      mostrarNotificacao(
+        `Não foi possível carregar o controle de ponto: ${erroPontos.message}`,
+        'error'
+      )
+      return
+    }
+
+    if (erroEmpregados) {
+      console.error('Não foi possível carregar os funcionários para o ponto:', erroEmpregados)
+      mostrarNotificacao(
+        `Não foi possível preparar os funcionários para o ponto: ${erroEmpregados.message}`,
+        'error'
+      )
+      return
+    }
+
+    const registrosReais = ((pontos || []) as unknown as RegistroPontoSupabase[]).map(
+      (registro) => {
+        const ocorrido = new Date(registro.occurred_at)
+        const empregado = Array.isArray(registro.employee)
+          ? registro.employee[0]
+          : registro.employee
+
+        return {
+          id: registro.id,
+          employeeId: registro.employee_id,
+          nome: empregado?.full_name || 'Funcionário',
+          funcao: empregado?.job_title || 'Auxiliar Logístico',
+          data: ocorrido.toLocaleDateString('pt-BR'),
+          horario: ocorrido.toLocaleTimeString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          status: 'Registrado' as const,
+          metodo:
+            registro.source === 'Facial'
+              ? 'Reconhecimento facial'
+              : registro.source,
+          tipoRegistro: registro.record_type,
+          facialVerificada: registro.facial_verified,
+          confiancaFacial:
+            registro.facial_confidence === null
+              ? null
+              : Number(registro.facial_confidence),
+          observacao: registro.observation || '',
+        }
+      }
+    )
+
+    const hoje = new Date().toLocaleDateString('pt-BR')
+
+    const pendentes: RegistroPonto[] = (empregados || []).flatMap(
+      (empregado): RegistroPonto[] => {
+      const registrosHoje = registrosReais
+        .filter(
+          (registro) =>
+            registro.data === hoje && registro.employeeId === empregado.id
+        )
+        .sort((a, b) => a.horario.localeCompare(b.horario))
+
+      const temEntrada = registrosHoje.some(
+        (registro) => registro.tipoRegistro === 'Entrada'
+      )
+      const temSaida = registrosHoje.some(
+        (registro) => registro.tipoRegistro === 'Saída'
+      )
+
+      if (!temEntrada) {
+        return [{
+          employeeId: empregado.id,
+          nome: empregado.full_name,
+          funcao: empregado.job_title || 'Auxiliar Logístico',
+          data: hoje,
+          horario: '--:--',
+          status: 'Pendente' as const,
+          tipoRegistro: 'Entrada' as const,
+        }]
+      }
+
+      if (!temSaida) {
+        return [{
+          employeeId: empregado.id,
+          nome: empregado.full_name,
+          funcao: empregado.job_title || 'Auxiliar Logístico',
+          data: hoje,
+          horario: '--:--',
+          status: 'Pendente' as const,
+          tipoRegistro: 'Saída' as const,
+        }]
+      }
+
+      return []
+      }
+    )
+
+    setRegistrosPonto([...pendentes, ...registrosReais])
+  }
+
+  useEffect(() => {
+    if (modoAcesso !== 'admin' || !usuarioLogado) return
+
+    void (async () => {
+      await carregarFuncionariosSupabase()
+      await carregarPontosSupabase()
+      await carregarDiariasSupabase()
+      await carregarFechamentosSupabase()
+      await carregarPagamentosSupabase()
+      await carregarDocumentosSupabase()
+      await carregarConfiguracoesSupabase()
+      await carregarFeriadosSupabase()
+      if (usuarioLogado.perfil === 'Administrador') {
+        await carregarUsuariosSupabase()
+        await carregarAuditoriaSupabase()
+      }
+    })()
+  }, [modoAcesso, usuarioLogado?.id])
+
+  useEffect(() => {
+    let ativo = true
+
+    async function restaurarSessaoSupabase() {
+      const { data, error } = await supabase.auth.getSession()
+
+      if (!ativo) return
+
+      if (error) {
+        console.error('Não foi possível restaurar a sessão do Supabase:', error)
+        return
+      }
+
+      if (data.session?.user) {
+        await carregarPerfilAutenticado(data.session.user)
+      }
+    }
+
+    void restaurarSessaoSupabase()
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!ativo) return
+
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        setUsuarioLogado(null)
+        setModoAcesso((modoAtual) => (modoAtual === 'admin' ? 'inicio' : modoAtual))
+        return
+      }
+
+      if (event === 'PASSWORD_RECOVERY') {
+        setModoAcesso('inicio')
+        setRecuperacaoAberta(true)
+        setRecuperacaoEtapa('novaSenha')
+        setRecuperacaoNovaSenha('')
+        setRecuperacaoConfirmarSenha('')
+        return
+      }
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        window.setTimeout(() => {
+          if (ativo) void carregarPerfilAutenticado(session.user)
+        }, 0)
+      }
+    })
+
+    return () => {
+      ativo = false
+      authListener.subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -868,48 +1439,27 @@ function App() {
     try {
       const salvoEm = new Date().toLocaleString('pt-BR')
 
-      const dadosParaSalvar = {
-        versao: 1,
+      const dadosLegadosParaSalvar = {
+        versao: 2,
         salvoEm,
-        funcionarios,
-        registrosPonto,
-        diarias,
-        fechamentos,
-        pagamentos,
-        documentos,
+        // Temporário até a migração do módulo de listas:
         listasDiaristas,
-        usuariosSistema,
-        registrosAuditoria,
-        feriados,
-        configuracaoValores,
       }
 
       window.localStorage.setItem(
         CHAVE_DADOS_LOCAIS,
-        JSON.stringify(dadosParaSalvar)
+        JSON.stringify(dadosLegadosParaSalvar)
       )
 
       setUltimaSincronizacaoLocal(salvoEm)
     } catch (erro) {
-      console.error('Não foi possível salvar os dados locais:', erro)
+      console.error('Não foi possível salvar os dados legados locais:', erro)
     }
-  }, [
-    funcionarios,
-    registrosPonto,
-    diarias,
-    fechamentos,
-    pagamentos,
-    documentos,
-    listasDiaristas,
-    usuariosSistema,
-    registrosAuditoria,
-    feriados,
-    configuracaoValores,
-  ])
+  }, [listasDiaristas])
 
   function limparDadosLocais() {
     const confirmou = window.confirm(
-      'Isso apagará os dados salvos neste navegador e restaurará o protótipo na próxima atualização da página. Deseja continuar?'
+      'Isso apagará somente os dados legados que ainda permanecem neste navegador. Os dados já migrados para o Supabase não serão apagados. Deseja continuar?'
     )
 
     if (!confirmou) return
@@ -917,12 +1467,212 @@ function App() {
     registrarAuditoria(
       'Restauração solicitada',
       'Configurações',
-      'Os dados locais do protótipo foram marcados para restauração.',
+      'Os dados legados armazenados neste navegador foram removidos.',
       'Crítico'
     )
 
     window.localStorage.removeItem(CHAVE_DADOS_LOCAIS)
     window.location.reload()
+  }
+
+  function exportarBackupCompleto() {
+    if (!podeAdministrar) {
+      mostrarNotificacao('Somente o Administrador pode exportar o backup completo.', 'warning')
+      return
+    }
+
+    try {
+      const agora = new Date()
+      const carimbo = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getDate()).padStart(2, '0')}_${String(agora.getHours()).padStart(2, '0')}-${String(agora.getMinutes()).padStart(2, '0')}`
+      const backup = {
+        produto: 'Gestão de Diaristas - Sindicato',
+        versao: 'Beta 2.4',
+        exportadoEm: agora.toISOString(),
+        dados: {
+          funcionarios,
+          registrosPonto,
+          diarias,
+          fechamentos,
+          pagamentos,
+          documentos,
+          listasDiaristas,
+          usuariosSistema,
+          feriados,
+          configuracaoValores,
+        },
+      }
+
+      const blob = new Blob([JSON.stringify(backup, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `backup-sindicato-beta-${carimbo}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+
+      registrarAuditoria(
+        'Backup exportado',
+        'Configurações',
+        'Backup completo dos dados locais foi exportado em JSON.',
+        'Informação'
+      )
+      mostrarNotificacao('Backup completo exportado com sucesso.', 'success')
+    } catch (erro) {
+      console.error(erro)
+      mostrarNotificacao('Não foi possível exportar o backup.', 'error')
+    }
+  }
+
+  function solicitarRestauracaoBackup() {
+    if (!podeAdministrar) {
+      mostrarNotificacao('Somente o Administrador pode restaurar backups.', 'warning')
+      return
+    }
+    inputBackupRef.current?.click()
+  }
+
+  function importarBackupCompleto(evento: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = evento.target.files?.[0]
+    evento.target.value = ''
+    if (!arquivo) return
+
+    const leitor = new FileReader()
+    leitor.onload = () => {
+      try {
+        const conteudo = JSON.parse(String(leitor.result || '{}'))
+        const dados = conteudo?.dados ?? conteudo
+
+        const colecoesObrigatorias = [
+          'funcionarios',
+          'registrosPonto',
+          'diarias',
+          'fechamentos',
+          'pagamentos',
+          'documentos',
+          'listasDiaristas',
+          'usuariosSistema',
+          'feriados',
+        ]
+
+        const invalido = colecoesObrigatorias.some(
+          (chave) => !Array.isArray(dados?.[chave])
+        )
+
+        if (invalido || !dados?.configuracaoValores) {
+          mostrarNotificacao('Arquivo de backup inválido ou incompleto.', 'error')
+          return
+        }
+
+        if (!window.confirm('Restaurar este backup substituirá os dados atuais deste navegador. Deseja continuar?')) {
+          return
+        }
+
+        setFuncionarios(dados.funcionarios)
+        setRegistrosPonto(dados.registrosPonto)
+        setDiarias(dados.diarias)
+        setFechamentos(dados.fechamentos)
+        setPagamentos(dados.pagamentos)
+        setDocumentos(dados.documentos)
+        setListasDiaristas(dados.listasDiaristas)
+        setUsuariosSistema(dados.usuariosSistema)
+        setFeriados(dados.feriados)
+        setConfiguracaoValores(dados.configuracaoValores)
+        setConfiguracaoTemporaria(dados.configuracaoValores)
+
+        window.setTimeout(() => {
+          registrarAuditoria(
+            'Backup restaurado',
+            'Configurações',
+            `Backup ${arquivo.name} restaurado no navegador.`,
+            'Crítico'
+          )
+        }, 0)
+        mostrarNotificacao('Backup restaurado com sucesso.', 'success')
+      } catch (erro) {
+        console.error(erro)
+        mostrarNotificacao('Não foi possível ler este arquivo de backup.', 'error')
+      }
+    }
+    leitor.readAsText(arquivo)
+  }
+
+  function abrirEdicaoDiaria(index: number) {
+    if (!podeAdministrar) {
+      mostrarNotificacao('Somente o Administrador pode editar uma diária.', 'warning')
+      return
+    }
+    const diaria = diarias[index]
+    if (!diaria) return
+    setDiariaEditando({ index, diaria: { ...diaria } })
+  }
+
+  function alterarCampoDiaria<K extends keyof Diaria>(campo: K, valor: Diaria[K]) {
+    setDiariaEditando((atual) =>
+      atual
+        ? { ...atual, diaria: { ...atual.diaria, [campo]: valor } }
+        : atual
+    )
+  }
+
+  async function salvarEdicaoDiaria() {
+    if (!diariaEditando || !podeAdministrar) return
+
+    const diariaAtualizada = {
+      ...diariaEditando.diaria,
+      diariaBase: Math.max(0, Number(diariaEditando.diaria.diariaBase) || 0),
+      adicional: Math.max(0, Number(diariaEditando.diaria.adicional) || 0),
+      vt: Math.max(0, Number(diariaEditando.diaria.vt) || 0),
+      vr: Math.max(0, Number(diariaEditando.diaria.vr) || 0),
+    }
+    diariaAtualizada.valor =
+      diariaAtualizada.diariaBase +
+      diariaAtualizada.adicional +
+      diariaAtualizada.vt +
+      diariaAtualizada.vr
+
+    if (!diariaAtualizada.id) {
+      mostrarNotificacao(
+        'Esta diária não possui vínculo com o Supabase. Recarregue a página e tente novamente.',
+        'error'
+      )
+      return
+    }
+
+    const { data: authData } = await supabase.auth.getUser()
+    const { error } = await supabase
+      .from('daily_records')
+      .update({
+        base_amount: diariaAtualizada.diariaBase,
+        additional_amount: diariaAtualizada.adicional,
+        transport_amount: diariaAtualizada.vt,
+        meal_amount: diariaAtualizada.vr,
+        total_amount: diariaAtualizada.valor,
+        observation: diariaAtualizada.observacao || null,
+        updated_by: authData.user?.id || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', diariaAtualizada.id)
+
+    if (error) {
+      console.error('Não foi possível atualizar a diária no Supabase:', error)
+      mostrarNotificacao(`Não foi possível atualizar a diária: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarDiariasSupabase()
+
+    registrarAuditoria(
+      'Diária editada manualmente',
+      'Diárias',
+      `${diariaAtualizada.nome} - ${diariaAtualizada.data}: total ajustado para ${moeda(diariaAtualizada.valor)} e salvo no Supabase.`,
+      'Atenção'
+    )
+    setDiariaEditando(null)
+    mostrarNotificacao('Diária atualizada no Supabase.', 'success')
   }
 
   function moeda(valor: number) {
@@ -1886,26 +2636,6 @@ function App() {
     0
   )
 
-  const detalhesFechamentoSelecionado = fechamentoSelecionado
-    ? pagamentosDoFechamento(fechamentoSelecionado)
-    : []
-
-  const fechamentoSelecionadoDados = fechamentoSelecionado
-    ? fechamentos.find(
-        (fechamento) => fechamento.periodo === fechamentoSelecionado
-      )
-    : undefined
-
-  const valorFechamentoSelecionado = detalhesFechamentoSelecionado.reduce(
-    (total, pagamento) => total + pagamento.valorTotal,
-    0
-  )
-
-  const diariasFechamentoSelecionado = detalhesFechamentoSelecionado.reduce(
-    (total, pagamento) => total + pagamento.quantidadeDiarias,
-    0
-  )
-
   function obterDiaSemana(data: string) {
     const [dia, mes, ano] = data.split('/').map(Number)
 
@@ -1948,7 +2678,7 @@ function App() {
     setStatusDocumentoFiltro('Todos')
   }
 
-  function salvarFuncionario() {
+  async function salvarFuncionario() {
     if (
       !novoFuncionario.nome ||
       !novoFuncionario.cpf ||
@@ -1962,20 +2692,78 @@ function App() {
       return
     }
 
-    setFuncionarios([
-      ...funcionarios,
-      {
-        ...novoFuncionario,
-        diaria: 'R$ 100,00',
-      },
-    ])
+    const cpf = somenteDigitos(novoFuncionario.cpf)
+    const cpfDuplicado = funcionarios.some(
+      (item) => somenteDigitos(item.cpf) === cpf
+    )
 
-    const nome = novoFuncionario.nome
+    if (cpfDuplicado) {
+      mostrarNotificacao(
+        'Já existe um funcionário cadastrado com este CPF.',
+        'error'
+      )
+      return
+    }
 
+    const { data: sessao } = await supabase.auth.getSession()
+    const usuarioId = sessao.session?.user.id ?? null
+
+    const payload = {
+      full_name: novoFuncionario.nome.trim(),
+      cpf,
+      birth_date: novoFuncionario.nascimento || null,
+      phone: somenteDigitos(novoFuncionario.telefone) || null,
+      email: novoFuncionario.email.trim() || null,
+      address: novoFuncionario.endereco.trim() || null,
+      hire_date: novoFuncionario.admissao || null,
+      job_title: novoFuncionario.funcao.trim() || 'Auxiliar Logístico',
+      status: novoFuncionario.status,
+      daily_rate: 100,
+      pix_type: novoFuncionario.tipoPix.trim() || null,
+      pix_key: novoFuncionario.chavePix.trim() || null,
+      pix_holder: novoFuncionario.titularPix.trim() || null,
+      photo_path: novoFuncionario.foto || null,
+      facial_status: novoFuncionario.facial,
+      created_by: usuarioId,
+      updated_by: usuarioId,
+    }
+
+    const { data, error } = await supabase
+      .from('employees')
+      .insert(payload)
+      .select(
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+      )
+      .single()
+
+    if (error || !data) {
+      console.error('Erro ao cadastrar funcionário no Supabase:', error)
+      mostrarNotificacao(
+        error?.message
+          ? `Não foi possível cadastrar: ${error.message}`
+          : 'Não foi possível cadastrar o funcionário.',
+        'error'
+      )
+      return
+    }
+
+    const cadastrado = funcionarioDoSupabase(data as FuncionarioSupabase)
+    setFuncionarios((atuais) =>
+      [...atuais, cadastrado].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+    )
+
+    const nome = cadastrado.nome
     setNovoFuncionario(funcionarioVazio)
     setMostrarFormulario(false)
 
-    mostrarNotificacao(`${nome} foi cadastrado com sucesso.`, 'success')
+    registrarAuditoria(
+      'Funcionário cadastrado',
+      'Funcionários',
+      `${nome} (${cadastrado.cpf}) foi cadastrado no banco de dados.`,
+      'Informação'
+    )
+
+    mostrarNotificacao(`${nome} foi cadastrado com sucesso no Supabase.`, 'success')
   }
 
   function cadastrarFacial() {
@@ -1987,6 +2775,264 @@ function App() {
     mostrarNotificacao(
       'Cadastro facial realizado no modo demonstrativo.',
       'success'
+    )
+  }
+
+  function iniciarEdicaoFuncionario(funcionario: Funcionario) {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode editar informações de funcionários.',
+        'warning'
+      )
+      return
+    }
+
+    setFuncionarioEmEdicao({ ...funcionario })
+    setCpfOriginalEdicao(funcionario.cpf)
+    setEditandoFuncionario(true)
+  }
+
+  function cancelarEdicaoFuncionario() {
+    setEditandoFuncionario(false)
+    setFuncionarioEmEdicao(null)
+    setCpfOriginalEdicao('')
+  }
+
+  async function salvarEdicaoFuncionario() {
+    if (!funcionarioEmEdicao) return
+
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode editar informações de funcionários.',
+        'warning'
+      )
+      return
+    }
+
+    const dados = funcionarioEmEdicao
+
+    if (!dados.nome.trim() || !dados.cpf.trim() || !dados.telefone.trim() || !dados.funcao.trim()) {
+      mostrarNotificacao(
+        'Preencha pelo menos nome, CPF, telefone e função.',
+        'warning'
+      )
+      return
+    }
+
+    const cpfDuplicado = funcionarios.some(
+      (item) =>
+        item.cpf !== cpfOriginalEdicao &&
+        somenteDigitos(item.cpf) === somenteDigitos(dados.cpf)
+    )
+
+    if (cpfDuplicado) {
+      mostrarNotificacao('Já existe um funcionário cadastrado com este CPF.', 'error')
+      return
+    }
+
+    const original = funcionarios.find((item) => item.cpf === cpfOriginalEdicao)
+
+    if (!original || !original.id) {
+      mostrarNotificacao(
+        'Não foi possível localizar o cadastro real deste funcionário no Supabase.',
+        'error'
+      )
+      return
+    }
+
+    const { data: sessao } = await supabase.auth.getSession()
+    const usuarioId = sessao.session?.user.id ?? null
+
+    const payload = {
+      full_name: dados.nome.trim(),
+      cpf: somenteDigitos(dados.cpf),
+      birth_date: dados.nascimento || null,
+      phone: somenteDigitos(dados.telefone) || null,
+      email: dados.email.trim() || null,
+      address: dados.endereco.trim() || null,
+      hire_date: dados.admissao || null,
+      job_title: dados.funcao.trim() || 'Auxiliar Logístico',
+      status: dados.status,
+      daily_rate: Number(
+        String(dados.diaria || '100')
+          .replace(/[^0-9,.-]/g, '')
+          .replace('.', '')
+          .replace(',', '.')
+      ) || 100,
+      pix_type: dados.tipoPix.trim() || null,
+      pix_key: dados.chavePix.trim() || null,
+      pix_holder: dados.titularPix.trim() || null,
+      photo_path: dados.foto || null,
+      facial_status: dados.facial,
+      updated_by: usuarioId,
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('employees')
+      .update(payload)
+      .eq('id', original.id)
+      .select(
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+      )
+      .single()
+
+    if (error || !data) {
+      console.error('Erro ao atualizar funcionário no Supabase:', error)
+      mostrarNotificacao(
+        error?.message
+          ? `Não foi possível salvar: ${error.message}`
+          : 'Não foi possível salvar as alterações.',
+        'error'
+      )
+      return
+    }
+
+    const atualizado = funcionarioDoSupabase(data as FuncionarioSupabase)
+
+    setFuncionarios((atuais) =>
+      atuais.map((item) => (item.id === original.id ? atualizado : item))
+    )
+
+    // Os módulos que ainda estão em migração usam o nome do trabalhador como referência.
+    if (original.nome !== atualizado.nome) {
+      setRegistrosPonto((atuais) =>
+        atuais.map((registro) =>
+          registro.nome === original.nome
+            ? { ...registro, nome: atualizado.nome }
+            : registro
+        )
+      )
+
+      setDiarias((atuais) =>
+        atuais.map((diaria) =>
+          diaria.nome === original.nome
+            ? { ...diaria, nome: atualizado.nome }
+            : diaria
+        )
+      )
+
+      setPagamentos((atuais) =>
+        atuais.map((pagamento) =>
+          pagamento.nome === original.nome
+            ? { ...pagamento, nome: atualizado.nome }
+            : pagamento
+        )
+      )
+
+      setDocumentos((atuais) =>
+        atuais.map((documento) =>
+          documento.funcionario === original.nome
+            ? { ...documento, funcionario: atualizado.nome }
+            : documento
+        )
+      )
+
+      setListasDiaristas((atuais) =>
+        atuais.map((lista) => ({
+          ...lista,
+          diaristas: lista.diaristas.map((nome) =>
+            nome === original.nome ? atualizado.nome : nome
+          ),
+        }))
+      )
+    }
+
+    setFuncionarioSelecionado(atualizado)
+    setFuncionarioEmEdicao(null)
+    setCpfOriginalEdicao('')
+    setEditandoFuncionario(false)
+
+    const camposAlterados: string[] = []
+    ;(Object.keys(atualizado) as Array<keyof Funcionario>).forEach((campo) => {
+      if (original[campo] !== atualizado[campo]) camposAlterados.push(String(campo))
+    })
+
+    registrarAuditoria(
+      'Cadastro de funcionário editado',
+      'Funcionários',
+      `${atualizado.nome} (${atualizado.cpf}) teve o cadastro atualizado no Supabase${
+        camposAlterados.length > 0 ? `: ${camposAlterados.join(', ')}` : ''
+      }.`,
+      'Informação'
+    )
+
+    mostrarNotificacao(
+      `Informações de ${atualizado.nome} salvas no Supabase.`,
+      'success'
+    )
+  }
+
+  async function alternarStatusFuncionario(funcionario: Funcionario) {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode ativar ou inativar funcionários.',
+        'warning'
+      )
+      return
+    }
+
+    if (!funcionario.id) {
+      mostrarNotificacao(
+        'Este cadastro ainda não está vinculado ao Supabase. Atualize a página e tente novamente.',
+        'error'
+      )
+      return
+    }
+
+    const novoStatus: Funcionario['status'] =
+      funcionario.status === 'Ativo' ? 'Inativo' : 'Ativo'
+
+    const { data: sessao } = await supabase.auth.getSession()
+    const usuarioId = sessao.session?.user.id ?? null
+
+    const { data, error } = await supabase
+      .from('employees')
+      .update({
+        status: novoStatus,
+        updated_by: usuarioId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', funcionario.id)
+      .select(
+        'id, full_name, cpf, birth_date, phone, email, address, hire_date, job_title, status, daily_rate, pix_type, pix_key, pix_holder, photo_path, facial_status'
+      )
+      .single()
+
+    if (error || !data) {
+      console.error('Erro ao alterar status do funcionário:', error)
+      mostrarNotificacao(
+        error?.message
+          ? `Não foi possível alterar o status: ${error.message}`
+          : 'Não foi possível alterar o status do funcionário.',
+        'error'
+      )
+      return
+    }
+
+    const atualizado = funcionarioDoSupabase(data as FuncionarioSupabase)
+
+    setFuncionarios((atuais) =>
+      atuais.map((item) => (item.id === funcionario.id ? atualizado : item))
+    )
+    setFuncionarioSelecionado(atualizado)
+
+    registrarAuditoria(
+      novoStatus === 'Ativo'
+        ? 'Funcionário reativado'
+        : 'Funcionário inativado',
+      'Funcionários',
+      `${funcionario.nome} (${funcionario.cpf}) foi ${
+        novoStatus === 'Ativo' ? 'reativado' : 'inativado'
+      } no Supabase.`,
+      novoStatus === 'Ativo' ? 'Informação' : 'Atenção'
+    )
+
+    mostrarNotificacao(
+      novoStatus === 'Ativo'
+        ? `${funcionario.nome} foi reativado com sucesso.`
+        : `${funcionario.nome} foi inativado. O histórico foi preservado.`,
+      novoStatus === 'Ativo' ? 'success' : 'warning'
     )
   }
 
@@ -2002,7 +3048,7 @@ function App() {
     return feriados.find((feriado) => feriado.ativo && feriado.data === iso)
   }
 
-  function adicionarFeriado(e: React.FormEvent) {
+  async function adicionarFeriado(e: React.FormEvent) {
     e.preventDefault()
 
     if (!novoFeriadoData || !novoFeriadoNome.trim()) {
@@ -2010,81 +3056,108 @@ function App() {
       return
     }
 
-    const jaExiste = feriados.some(
-      (feriado) =>
-        feriado.data === novoFeriadoData &&
-        feriado.nome.trim().toLowerCase() === novoFeriadoNome.trim().toLowerCase()
-    )
+    const jaExiste = feriados.some((feriado) => feriado.data === novoFeriadoData)
 
     if (jaExiste) {
-      mostrarNotificacao('Esse feriado já está cadastrado.', 'warning')
+      mostrarNotificacao('Já existe um feriado cadastrado nessa data.', 'warning')
       return
     }
 
-    const novo: Feriado = {
-      id: Date.now(),
-      data: novoFeriadoData,
-      nome: novoFeriadoNome.trim(),
-      tipo: novoFeriadoTipo,
-      ativo: true,
+    const { data: authData } = await supabase.auth.getUser()
+    const authId = authData.user?.id ?? usuarioLogado?.authId ?? null
+
+    const { data, error } = await supabase
+      .from('holidays')
+      .insert({
+        holiday_date: novoFeriadoData,
+        name: novoFeriadoNome.trim(),
+        holiday_type: novoFeriadoTipo,
+        active: true,
+        created_by: authId,
+      })
+      .select('id, holiday_date, name, holiday_type, active, created_by, created_at, updated_at')
+      .single()
+
+    if (error) {
+      console.error('Não foi possível cadastrar o feriado:', error)
+      mostrarNotificacao(`Não foi possível cadastrar o feriado: ${error.message}`, 'error')
+      return
     }
 
-    setFeriados((atuais) =>
-      [...atuais, novo].sort((a, b) => a.data.localeCompare(b.data))
-    )
-
-    registrarAuditoria(
+    const criado = data as FeriadoSupabase
+    await carregarFeriadosSupabase()
+    await registrarAuditoria(
       'Feriado cadastrado',
       'Calendário',
-      `${novo.nome} em ${new Date(`${novo.data}T12:00:00`).toLocaleDateString('pt-BR')} (${novo.tipo}).`,
-      'Atenção'
+      `${criado.name} em ${new Date(`${criado.holiday_date}T12:00:00`).toLocaleDateString('pt-BR')} (${criado.holiday_type}).`,
+      'Atenção',
+      undefined,
+      'holiday',
+      criado.id
     )
 
     setNovoFeriadoData('')
     setNovoFeriadoNome('')
     setNovoFeriadoTipo('Municipal')
     setMostrarNovoFeriado(false)
-    mostrarNotificacao('Feriado adicionado ao calendário.', 'success')
+    mostrarNotificacao('Feriado cadastrado no Supabase.', 'success')
   }
 
-  function alternarFeriado(id: number) {
-    const alvo = feriados.find((feriado) => feriado.id === id)
-
-    setFeriados((atuais) =>
-      atuais.map((feriado) =>
-        feriado.id === id
-          ? { ...feriado, ativo: !feriado.ativo }
-          : feriado
-      )
-    )
-
-    if (alvo) {
-      registrarAuditoria(
-        alvo.ativo ? 'Feriado desativado' : 'Feriado ativado',
-        'Calendário',
-        `${alvo.nome} teve sua regra de cálculo alterada.`,
-        'Atenção'
-      )
-    }
-  }
-
-  function excluirFeriado(id: number) {
+  async function alternarFeriado(id: string) {
     const alvo = feriados.find((feriado) => feriado.id === id)
     if (!alvo) return
 
-    const confirmou = window.confirm(
-      `Deseja excluir "${alvo.nome}" do calendário?`
+    const novoStatus = !alvo.ativo
+    const { error } = await supabase
+      .from('holidays')
+      .update({ active: novoStatus, updated_at: new Date().toISOString() })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Não foi possível alterar o feriado:', error)
+      mostrarNotificacao(`Não foi possível alterar o feriado: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarFeriadosSupabase()
+    await registrarAuditoria(
+      novoStatus ? 'Feriado ativado' : 'Feriado desativado',
+      'Calendário',
+      `${alvo.nome} teve sua regra de cálculo alterada no Supabase.`,
+      'Atenção',
+      undefined,
+      'holiday',
+      id
     )
+    mostrarNotificacao(novoStatus ? 'Feriado ativado.' : 'Feriado desativado.', novoStatus ? 'success' : 'warning')
+  }
+
+  async function excluirFeriado(id: string) {
+    const alvo = feriados.find((feriado) => feriado.id === id)
+    if (!alvo) return
+
+    const confirmou = window.confirm(`Deseja excluir "${alvo.nome}" do calendário?`)
     if (!confirmou) return
 
-    setFeriados((atuais) => atuais.filter((feriado) => feriado.id !== id))
-    registrarAuditoria(
+    const { error } = await supabase.from('holidays').delete().eq('id', id)
+
+    if (error) {
+      console.error('Não foi possível excluir o feriado:', error)
+      mostrarNotificacao(`Não foi possível excluir o feriado: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarFeriadosSupabase()
+    await registrarAuditoria(
       'Feriado excluído',
       'Calendário',
-      `${alvo.nome} foi removido do calendário.`,
-      'Atenção'
+      `${alvo.nome} foi removido do calendário do Supabase.`,
+      'Atenção',
+      undefined,
+      'holiday',
+      id
     )
-    mostrarNotificacao('Feriado removido.', 'success')
+    mostrarNotificacao('Feriado removido do Supabase.', 'success')
   }
 
   function calcularAdicionalPercentual(
@@ -2172,38 +3245,169 @@ function App() {
     return true
   }
 
-  function registrarPontoManual(index: number) {
-    const agora = new Date()
+  async function gerarDiariaDoPontoSupabase(
+    employeeId: string,
+    ocorridoEm: Date,
+    usuarioId: string | null
+  ) {
+    const workDate = dataISOEmSaoPaulo(ocorridoEm)
 
+    const { data: existente, error: erroExistente } = await supabase
+      .from('daily_records')
+      .select('id')
+      .eq('employee_id', employeeId)
+      .eq('work_date', workDate)
+      .maybeSingle()
+
+    if (erroExistente) {
+      console.error('Não foi possível verificar a diária existente:', erroExistente)
+      return { criada: false, erro: erroExistente.message }
+    }
+
+    if (existente) {
+      await carregarDiariasSupabase()
+      return { criada: false, erro: null }
+    }
+
+    const { data: empregado, error: erroEmpregado } = await supabase
+      .from('employees')
+      .select('id, full_name, job_title, daily_rate')
+      .eq('id', employeeId)
+      .single()
+
+    if (erroEmpregado || !empregado) {
+      console.error('Não foi possível carregar o funcionário para gerar a diária:', erroEmpregado)
+      return { criada: false, erro: erroEmpregado?.message || 'Funcionário não encontrado.' }
+    }
+
+    const dataReferencia = new Date(`${workDate}T12:00:00`)
+    const { tipoDia } = descobrirTipoDia(dataReferencia)
+    const base = Number(empregado.daily_rate) || configuracaoValores.diariaBase
+
+    let percentualAdicional = 0
+    if (tipoDia === 'Sábado') percentualAdicional = configuracaoValores.percentualSabado
+    if (tipoDia === 'Domingo') percentualAdicional = configuracaoValores.percentualDomingo
+    if (tipoDia === 'Feriado') percentualAdicional = configuracaoValores.percentualFeriado
+
+    const adicional = calcularAdicionalPercentual(base, percentualAdicional)
+    const vt = Math.max(0, Number(configuracaoValores.vt) || 0)
+    const vr = Math.max(0, Number(configuracaoValores.vr) || 0)
+    const total = base + adicional + vt + vr
+
+    const { error: erroInsert } = await supabase
+      .from('daily_records')
+      .insert({
+        employee_id: employeeId,
+        work_date: workDate,
+        base_amount: base,
+        additional_amount: adicional,
+        transport_amount: vt,
+        meal_amount: vr,
+        total_amount: total,
+        day_type: tipoDia === 'Semana' ? 'Útil' : tipoDia,
+        status: 'Pendente',
+        generated_from: 'Ponto',
+        observation: 'Diária gerada automaticamente após registro de saída no controle de ponto.',
+        created_by: usuarioId,
+        updated_by: usuarioId,
+      })
+
+    if (erroInsert) {
+      console.error('Não foi possível gerar a diária no Supabase:', erroInsert)
+      return { criada: false, erro: erroInsert.message }
+    }
+
+    await carregarDiariasSupabase()
+    return { criada: true, erro: null }
+  }
+
+  async function registrarPontoManual(index: number) {
+    const registro = registrosPonto[index]
+
+    if (!registro) return
+
+    if (!registro.employeeId) {
+      mostrarNotificacao(
+        'Este registro não possui vínculo com o funcionário no Supabase.',
+        'error'
+      )
+      return
+    }
+
+    const agora = new Date()
     const horario = agora.toLocaleTimeString('pt-BR', {
       hour: '2-digit',
       minute: '2-digit',
     })
 
-    const data = agora.toLocaleDateString('pt-BR')
+    const { data: authData } = await supabase.auth.getUser()
 
-    const registro = registrosPonto[index]
-    const novosRegistros = [...registrosPonto]
+    const { data, error } = await supabase
+      .from('attendance_records')
+      .insert({
+        employee_id: registro.employeeId,
+        occurred_at: agora.toISOString(),
+        record_type: registro.tipoRegistro || 'Entrada',
+        source: 'Manual',
+        facial_verified: false,
+        facial_confidence: null,
+        terminal_id: null,
+        observation: 'Registro manual realizado pelo painel administrativo.',
+        created_by: authData.user?.id || null,
+      })
+      .select(
+        'id, employee_id, occurred_at, record_type, source, facial_verified, facial_confidence, observation'
+      )
+      .single()
 
-    novosRegistros[index] = {
-      ...registro,
-      data,
-      horario,
-      status: 'Registrado',
-      metodo: 'Manual',
+    if (error || !data) {
+      console.error('Não foi possível registrar o ponto no Supabase:', error)
+      mostrarNotificacao(
+        `Não foi possível registrar o ponto: ${error?.message || 'erro desconhecido'}`,
+        'error'
+      )
+      return
     }
 
-    setRegistrosPonto(novosRegistros)
+    await carregarPontosSupabase()
+
+    let diariaGerada = false
+    let erroDiaria: string | null = null
+    if ((registro.tipoRegistro || 'Entrada') === 'Saída') {
+      const resultadoDiaria = await gerarDiariaDoPontoSupabase(
+        registro.employeeId,
+        agora,
+        authData.user?.id || null
+      )
+      diariaGerada = resultadoDiaria.criada
+      erroDiaria = resultadoDiaria.erro
+    }
 
     registrarAuditoria(
       'Ponto manual registrado',
       'Controle de Ponto',
-      `Presença de ${registro.nome} registrada manualmente às ${horario}.`,
+      `${registro.tipoRegistro || 'Entrada'} de ${registro.nome} registrada manualmente às ${horario} e salva no Supabase.`,
       'Atenção'
     )
 
+    if (erroDiaria) {
+      mostrarNotificacao(
+        `${registro.tipoRegistro || 'Entrada'} registrada, mas a diária não pôde ser gerada: ${erroDiaria}`,
+        'warning'
+      )
+      return
+    }
+
+    if (diariaGerada) {
+      mostrarNotificacao(
+        `Saída de ${registro.nome} registrada e diária gerada automaticamente no Supabase.`,
+        'success'
+      )
+      return
+    }
+
     mostrarNotificacao(
-      `Ponto de ${registro.nome} registrado. A diária será gerada após a conferência da operação.`,
+      `${registro.tipoRegistro || 'Entrada'} de ${registro.nome} registrada e salva no Supabase.`,
       'success'
     )
   }
@@ -2355,18 +3559,33 @@ function App() {
     )
   }
 
-  function aprovarDiaria(index: number) {
+  async function aprovarDiaria(index: number) {
     const diaria = diarias[index]
-    const novasDiarias = [...diarias]
+    if (!diaria) return
 
-    novasDiarias[index] = {
-      ...novasDiarias[index],
-      status: 'Aprovada',
+    if (!diaria.id) {
+      mostrarNotificacao('Esta diária não possui vínculo com o Supabase.', 'error')
+      return
     }
 
-    setDiarias(novasDiarias)
+    const { data: authData } = await supabase.auth.getUser()
+    const { error } = await supabase
+      .from('daily_records')
+      .update({
+        status: 'Aprovada',
+        updated_by: authData.user?.id || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', diaria.id)
 
-    mostrarNotificacao(`Diária de ${diaria.nome} aprovada.`, 'success')
+    if (error) {
+      console.error('Não foi possível aprovar a diária no Supabase:', error)
+      mostrarNotificacao(`Não foi possível aprovar a diária: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarDiariasSupabase()
+    mostrarNotificacao(`Diária de ${diaria.nome} aprovada no Supabase.`, 'success')
   }
 
   function periodoFechamentoPorData(dataReferencia = new Date()) {
@@ -2509,7 +3728,7 @@ function App() {
         sabados: itens.filter((item) => item.tipoDia === 'Sábado').length,
         domingos: itens.filter((item) => item.tipoDia === 'Domingo').length,
         feriados: itens.filter((item) => item.tipoDia === 'Feriado').length,
-        base: itens.reduce((soma, item) => soma + item.valorBase, 0),
+        base: itens.reduce((soma, item) => soma + item.diariaBase, 0),
         adicional: itens.reduce((soma, item) => soma + item.adicional, 0),
         vt: itens.reduce((soma, item) => soma + item.vt, 0),
         vr: itens.reduce((soma, item) => soma + item.vr, 0),
@@ -2545,209 +3764,320 @@ function App() {
     return { funcionarios: funcionariosResumo, inconsistencias, totais }
   }
 
-  function abrirQuinzenaAtual() {
+  async function abrirQuinzenaAtual() {
     const atual = periodoFechamentoPorData()
-    const indice = fechamentos.findIndex(
-      (fechamento) => fechamento.periodo === atual.periodo
-    )
+    const datas = extrairPeriodoFechamento(atual.periodo)
+    if (!datas) return
 
-    if (indice >= 0) {
-      setFechamentoSelecionado(indice)
-      mostrarNotificacao('Quinzena aberta para conferência.', 'success')
+    const inicioISO = dataISOEmSaoPaulo(datas.inicio)
+    const fimISO = dataISOEmSaoPaulo(datas.fim)
+
+    const existente = fechamentos.find(
+      (item) => item.startDate === inicioISO && item.endDate === fimISO
+    )
+    if (existente) {
+      setFechamentoSelecionado(fechamentos.indexOf(existente))
+      mostrarNotificacao('Essa quinzena já existe no Supabase.', 'success')
       return
     }
 
-    setFechamentos((atuais) => [
-      { periodo: atual.periodo, pagamento: atual.pagamento, status: 'Aberto' },
-      ...atuais,
-    ])
-    setFechamentoSelecionado(0)
-    registrarAuditoria(
-      'Fechamento criado',
-      'Fechamentos',
-      `Quinzena ${atual.periodo} criada automaticamente.`,
-      'Atenção'
-    )
-    mostrarNotificacao('Quinzena atual criada automaticamente.', 'success')
+    const { data: registros, error: erroDiarias } = await supabase
+      .from('daily_records')
+      .select('id, base_amount, additional_amount, transport_amount, meal_amount, total_amount')
+      .gte('work_date', inicioISO)
+      .lte('work_date', fimISO)
+      .eq('status', 'Aprovada')
+
+    if (erroDiarias) {
+      mostrarNotificacao(`Não foi possível consultar as diárias aprovadas: ${erroDiarias.message}`, 'error')
+      return
+    }
+
+    if (!registros?.length) {
+      mostrarNotificacao('Não há diárias aprovadas nessa quinzena.', 'warning')
+      return
+    }
+
+    const totalDaily = registros.reduce((soma, item) => soma + Number(item.base_amount || 0) + Number(item.additional_amount || 0), 0)
+    const totalTransport = registros.reduce((soma, item) => soma + Number(item.transport_amount || 0), 0)
+    const totalMeal = registros.reduce((soma, item) => soma + Number(item.meal_amount || 0), 0)
+    const totalAmount = registros.reduce((soma, item) => soma + Number(item.total_amount || 0), 0)
+
+    const { data: criado, error: erroFechamento } = await supabase
+      .from('closings')
+      .insert({
+        start_date: inicioISO,
+        end_date: fimISO,
+        status: 'Em conferência',
+        total_daily: totalDaily,
+        total_transport: totalTransport,
+        total_meal: totalMeal,
+        total_amount: totalAmount,
+        created_by: usuarioLogado?.authId || null,
+      })
+      .select('id')
+      .single()
+
+    if (erroFechamento || !criado) {
+      mostrarNotificacao(`Não foi possível criar o fechamento: ${erroFechamento?.message || 'erro desconhecido'}`, 'error')
+      return
+    }
+
+    const { error: erroVinculo } = await supabase
+      .from('closing_daily_records')
+      .insert(registros.map((item) => ({ closing_id: criado.id, daily_record_id: item.id })))
+
+    if (erroVinculo) {
+      mostrarNotificacao(`Fechamento criado, mas houve erro ao vincular as diárias: ${erroVinculo.message}`, 'error')
+      await carregarFechamentosSupabase()
+      return
+    }
+
+    await carregarFechamentosSupabase()
+    registrarAuditoria('Fechamento criado', 'Fechamentos', `Quinzena ${atual.periodo} criada no Supabase com ${registros.length} diária(s) aprovada(s).`, 'Atenção')
+    mostrarNotificacao('Quinzena criada e vinculada às diárias no Supabase.', 'success')
   }
 
-  function aprovarQuinzena(index: number) {
+  async function aprovarQuinzena(index: number) {
     const fechamento = fechamentos[index]
-    if (!fechamento) return
+    if (!fechamento?.id) return
 
     const resumo = resumoAutomaticoFechamento(fechamento.periodo)
-    const criticos = resumo.inconsistencias.filter(
-      (item) => item.nivel === 'Crítico'
+    const criticos = resumo.inconsistencias.filter((item) => item.nivel === 'Crítico')
+    if (criticos.length) {
+      mostrarNotificacao(`Corrija ${criticos.length} pendência(s) crítica(s) antes de aprovar.`, 'error')
+      return
+    }
+
+    if (!fechamento.dailyRecordIds?.length) {
+      mostrarNotificacao('Esse fechamento não possui diárias vinculadas.', 'warning')
+      return
+    }
+
+    const { error } = await supabase.from('closings').update({
+      status: 'Aprovado',
+      approved_by: usuarioLogado?.authId || null,
+      approved_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq('id', fechamento.id)
+
+    if (error) {
+      mostrarNotificacao(`Não foi possível aprovar a quinzena: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarFechamentosSupabase()
+    mostrarNotificacao('Quinzena aprovada no Supabase.', 'success')
+  }
+
+  async function enviarQuinzenaPagamentos(index: number) {
+    const fechamento = fechamentos[index]
+    if (!fechamento?.id || fechamento.status !== 'Aprovado') {
+      mostrarNotificacao('Aprove a quinzena antes de enviar para pagamentos.', 'warning')
+      return
+    }
+
+    const idsDoFechamento = fechamento.dailyRecordIds || []
+    const diariasDoFechamento = diarias.filter(
+      (item) => item.id && idsDoFechamento.includes(item.id) && item.status === 'Aprovada'
     )
 
-    if (criticos.length) {
+    if (!diariasDoFechamento.length) {
+      mostrarNotificacao('Não há diárias aprovadas vinculadas a esse fechamento.', 'warning')
+      return
+    }
+
+    const agrupados = new Map<
+      string,
+      { employeeId: string; nome: string; quantidade: number; total: number }
+    >()
+
+    diariasDoFechamento.forEach((item) => {
+      if (!item.employeeId) return
+      const atual = agrupados.get(item.employeeId) || {
+        employeeId: item.employeeId,
+        nome: item.nome,
+        quantidade: 0,
+        total: 0,
+      }
+      atual.quantidade += 1
+      atual.total += Number(item.valor) || 0
+      agrupados.set(item.employeeId, atual)
+    })
+
+    const { data: existentes, error: erroExistentes } = await supabase
+      .from('payments')
+      .select('employee_id')
+      .eq('closing_id', fechamento.id)
+
+    if (erroExistentes) {
+      mostrarNotificacao(`Não foi possível verificar pagamentos existentes: ${erroExistentes.message}`, 'error')
+      return
+    }
+
+    const empregadosJaGerados = new Set(
+      (existentes || []).map((item: { employee_id: string }) => item.employee_id)
+    )
+
+    const novosPagamentos = Array.from(agrupados.values())
+      .filter((item) => !empregadosJaGerados.has(item.employeeId))
+      .map((item) => {
+        const funcionario = funcionarios.find((f) => f.id === item.employeeId)
+        return {
+          employee_id: item.employeeId,
+          closing_id: fechamento.id,
+          amount: item.total,
+          payment_method: 'PIX',
+          status: 'Pendente',
+          pix_key_snapshot: funcionario?.chavePix || null,
+          pix_holder_snapshot: funcionario?.titularPix || funcionario?.nome || item.nome,
+          observation: `Pagamento referente ao fechamento ${fechamento.periodo}.`,
+          created_by: usuarioLogado?.authId || null,
+          updated_by: usuarioLogado?.authId || null,
+        }
+      })
+
+    if (novosPagamentos.length) {
+      const { error: erroPagamentos } = await supabase
+        .from('payments')
+        .insert(novosPagamentos)
+
+      if (erroPagamentos) {
+        mostrarNotificacao(`Não foi possível gerar os pagamentos: ${erroPagamentos.message}`, 'error')
+        return
+      }
+    }
+
+    const { error } = await supabase.from('closings').update({
+      status: 'Enviado para pagamento',
+      sent_to_payment_by: usuarioLogado?.authId || null,
+      sent_to_payment_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq('id', fechamento.id)
+
+    if (error) {
+      mostrarNotificacao(`Os pagamentos foram gerados, mas não foi possível atualizar o fechamento: ${error.message}`, 'error')
+      await carregarPagamentosSupabase()
+      return
+    }
+
+    await carregarFechamentosSupabase()
+    await carregarPagamentosSupabase()
+    registrarAuditoria(
+      'Pagamentos gerados',
+      'Pagamentos',
+      `Fechamento ${fechamento.periodo} enviado para pagamento com ${agrupados.size} funcionário(s).`,
+      'Atenção'
+    )
+    mostrarNotificacao('Pagamentos gerados no Supabase e fechamento enviado para pagamento.', 'success')
+  }
+
+  async function reabrirQuinzena(index: number) {
+    const fechamento = fechamentos[index]
+    if (!fechamento?.id || fechamento.status === 'Pago') return
+    if (!window.confirm(`Reabrir ${fechamento.periodo} para conferência?`)) return
+
+    const { error } = await supabase.from('closings').update({
+      status: 'Reaberto',
+      approved_by: null,
+      approved_at: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', fechamento.id)
+
+    if (error) {
+      mostrarNotificacao(`Não foi possível reabrir o fechamento: ${error.message}`, 'error')
+      return
+    }
+
+    await carregarFechamentosSupabase()
+    mostrarNotificacao('Fechamento reaberto no Supabase.', 'success')
+  }
+
+  async function marcarPagamentoComoPago(index: number) {
+    const pagamento = pagamentos[index]
+
+    if (!pagamento?.id) {
+      mostrarNotificacao('Esse pagamento ainda não está vinculado ao Supabase.', 'warning')
+      return
+    }
+
+    if (pagamento.status === 'Pago') return
+
+    const agoraISO = new Date().toISOString()
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !authData.user) {
+      mostrarNotificacao('Sua sessão não pôde ser confirmada. Entre novamente no sistema.', 'error')
+      return
+    }
+
+    const { data: pagamentoAtualizado, error } = await supabase
+      .from('payments')
+      .update({
+        status: 'Pago',
+        paid_at: agoraISO,
+        updated_by: authData.user.id,
+        updated_at: agoraISO,
+      })
+      .eq('id', pagamento.id)
+      .select('id, status, paid_at, closing_id')
+      .single()
+
+    if (error || !pagamentoAtualizado || pagamentoAtualizado.status !== 'Pago') {
+      console.error('Falha ao persistir pagamento como Pago:', error)
       mostrarNotificacao(
-        `Corrija ${criticos.length} pendência(s) crítica(s) antes de aprovar.`,
+        `O pagamento não foi alterado no banco. ${error?.message || 'Verifique as permissões de atualização da tabela payments.'}`,
         'error'
       )
       return
     }
 
-    if (!resumo.totais.diarias) {
-      mostrarNotificacao('Não há diárias para aprovar nesta quinzena.', 'warning')
-      return
-    }
+    if (pagamento.closingId) {
+      const { data: pagamentosDoFechamento, error: erroConsulta } = await supabase
+        .from('payments')
+        .select('status')
+        .eq('closing_id', pagamento.closingId)
 
-    setFechamentos((atuais) =>
-      atuais.map((item, i) =>
-        i === index ? { ...item, status: 'Aprovado' } : item
-      )
-    )
-
-    registrarAuditoria(
-      'Quinzena aprovada',
-      'Fechamentos',
-      `${fechamento.periodo} aprovada com total de ${moeda(resumo.totais.total)}.`,
-      'Atenção'
-    )
-    mostrarNotificacao('Quinzena aprovada e consolidada.', 'success')
-  }
-
-  function enviarQuinzenaPagamentos(index: number) {
-    const fechamento = fechamentos[index]
-    if (!fechamento || fechamento.status !== 'Aprovado') {
-      mostrarNotificacao('Aprove a quinzena antes de enviar para pagamentos.', 'warning')
-      return
-    }
-
-    const resumo = resumoAutomaticoFechamento(fechamento.periodo)
-
-    const novos: Pagamento[] = resumo.funcionarios
-      .filter((item) => item.total > 0)
-      .filter(
-        (item) =>
-          !pagamentos.some(
-            (pagamento) =>
-              pagamento.nome === item.nome &&
-              pagamento.periodo === fechamento.periodo
-          )
-      )
-      .map((item) => {
-        const funcionario = funcionarios.find((f) => f.nome === item.nome)
-        return {
-          nome: item.nome,
-          periodo: fechamento.periodo,
-          quantidadeDiarias: item.diarias,
-          valorTotal: item.total,
-          pix: funcionario?.pix || '-',
-          status: 'Aguardando',
-          dataPagamento: '-',
-        }
-      })
-
-    if (novos.length) setPagamentos((atuais) => [...atuais, ...novos])
-
-    setFechamentos((atuais) =>
-      atuais.map((item, i) =>
-        i === index ? { ...item, status: 'Aguardando pagamento' } : item
-      )
-    )
-
-    registrarAuditoria(
-      'Enviado para pagamentos',
-      'Fechamentos',
-      `${fechamento.periodo}: ${novos.length} pagamento(s) preparado(s).`,
-      'Atenção'
-    )
-    mostrarNotificacao('Quinzena enviada para a Central de Pagamentos.', 'success')
-  }
-
-  function reabrirQuinzena(index: number) {
-    const fechamento = fechamentos[index]
-    if (!fechamento || fechamento.status === 'Pago') return
-
-    if (!window.confirm(`Reabrir ${fechamento.periodo} para conferência?`)) return
-
-    setFechamentos((atuais) =>
-      atuais.map((item, i) =>
-        i === index ? { ...item, status: 'Em revisão' } : item
-      )
-    )
-
-    registrarAuditoria(
-      'Fechamento reaberto',
-      'Fechamentos',
-      `${fechamento.periodo} foi reaberto para correções.`,
-      'Crítico'
-    )
-    mostrarNotificacao('Fechamento reaberto.', 'success')
-  }
-
-  function avancarFechamento(index: number) {
-    const fechamento = fechamentos[index]
-    if (!fechamento) return
-
-    if (fechamento.status === 'Aberto') {
-      setFechamentos((atuais) =>
-        atuais.map((item, i) =>
-          i === index ? { ...item, status: 'Em revisão' } : item
+      if (!erroConsulta && pagamentosDoFechamento?.length) {
+        const todosPagos = pagamentosDoFechamento.every(
+          (item: { status: string }) => item.status === 'Pago'
         )
-      )
-      mostrarNotificacao('Fechamento enviado para revisão.', 'success')
-      return
+
+        if (todosPagos) {
+          const { error: erroFechamento } = await supabase
+            .from('closings')
+            .update({ status: 'Pago', updated_at: agoraISO })
+            .eq('id', pagamento.closingId)
+
+          if (erroFechamento) {
+            console.error('Pagamento foi salvo, mas o fechamento não pôde ser marcado como Pago:', erroFechamento)
+          }
+        }
+      }
     }
 
-    if (fechamento.status === 'Em revisão') {
-      aprovarQuinzena(index)
-      return
-    }
+    await carregarPagamentosSupabase()
+    await carregarFechamentosSupabase()
 
-    if (fechamento.status === 'Aprovado') {
-      enviarQuinzenaPagamentos(index)
-      return
-    }
-
-    if (fechamento.status === 'Aguardando pagamento') {
-      setTela('pagamentos')
-      return
-    }
-
-    mostrarNotificacao('Fechamento já concluído.', 'warning')
-  }
-
-  function marcarPagamentoComoPago(index: number) {
-    const novosPagamentos = [...pagamentos]
-
-    const agora = new Date()
-
-    const data = agora.toLocaleDateString('pt-BR')
-
-    const hora = agora.toLocaleTimeString('pt-BR', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-
-    const pagamento = novosPagamentos[index]
-
-    novosPagamentos[index] = {
-      ...pagamento,
-      status: 'Pago',
-      dataPagamento: `${data} ${hora}`,
-    }
-
-    setPagamentos(novosPagamentos)
-
-    if (
-      pagamentoPixSelecionado &&
-      pagamentoPixSelecionado.nome === pagamento.nome &&
-      pagamentoPixSelecionado.periodo === pagamento.periodo
-    ) {
+    if (pagamentoPixSelecionado?.id === pagamento.id) {
       setPagamentoPixSelecionado({
         ...pagamentoPixSelecionado,
         status: 'Pago',
-        dataPagamento: `${data} ${hora}`,
+        dataPagamento: new Date(pagamentoAtualizado.paid_at || agoraISO).toLocaleString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          dateStyle: 'short',
+          timeStyle: 'short',
+        }),
       })
     }
 
-    mostrarNotificacao(
-      `Pagamento de ${pagamento.nome} confirmado.`,
-      'success'
+    registrarAuditoria(
+      'Pagamento confirmado',
+      'Pagamentos',
+      `Pagamento de ${pagamento.nome} no valor de ${moeda(pagamento.valorTotal)} confirmado manualmente.`,
+      'Atenção'
     )
+    mostrarNotificacao(`Pagamento de ${pagamento.nome} confirmado e verificado no Supabase.`, 'success')
   }
 
   function marcarPagamentoSelecionadoComoPago() {
@@ -2764,53 +4094,242 @@ function App() {
     }
   }
 
-  function salvarDocumento() {
+  async function salvarDocumento() {
     if (
       !novoDocumento.funcionario ||
       !novoDocumento.tipo ||
-      !novoDocumento.nomeArquivo
+      !novoDocumento.titulo.trim() ||
+      !novoDocumento.arquivo
     ) {
-      mostrarNotificacao('Preencha funcionário, tipo e arquivo.', 'warning')
+      mostrarNotificacao(
+        'Preencha funcionário, tipo, título e selecione um arquivo.',
+        'warning'
+      )
       return
     }
 
-    const hoje = new Date().toLocaleDateString('pt-BR')
-    const nomeFuncionario = novoDocumento.funcionario
-
-    setDocumentos([
-      ...documentos,
-      {
-        nome: novoDocumento.nomeArquivo,
-        funcionario: novoDocumento.funcionario,
-        tipo: novoDocumento.tipo,
-        dataEnvio: hoje,
-        status: 'Enviado',
-      },
-    ])
-
-    setNovoDocumento({
-      funcionario: '',
-      tipo: '',
-      nomeArquivo: '',
-    })
-
-    setMostrarDocumento(false)
-
-    mostrarNotificacao(
-      `Documento de ${nomeFuncionario} adicionado.`,
-      'success'
+    const funcionario = funcionarios.find(
+      (item) => item.nome === novoDocumento.funcionario
     )
+
+    if (!funcionario?.id) {
+      mostrarNotificacao(
+        'Esse funcionário não possui vínculo válido com o Supabase.',
+        'error'
+      )
+      return
+    }
+
+    const arquivo = novoDocumento.arquivo
+    const limiteBytes = 10 * 1024 * 1024
+
+    if (arquivo.size > limiteBytes) {
+      mostrarNotificacao(
+        'O arquivo ultrapassa 10 MB. Escolha um documento menor.',
+        'warning'
+      )
+      return
+    }
+
+    setEnviandoDocumento(true)
+
+    const nomeSeguro = arquivo.name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+
+    const caminho = `${funcionario.id}/${Date.now()}-${crypto.randomUUID()}-${nomeSeguro}`
+
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from('documentos-funcionarios')
+        .upload(caminho, arquivo, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: arquivo.type || undefined,
+        })
+
+      if (uploadError) {
+        throw uploadError
+      }
+
+      const { data, error } = await supabase
+        .from('employee_documents')
+        .insert({
+          employee_id: funcionario.id,
+          document_type: novoDocumento.tipo,
+          title: novoDocumento.titulo.trim(),
+          storage_path: caminho,
+          original_filename: arquivo.name,
+          mime_type: arquivo.type || null,
+          file_size: arquivo.size,
+          expires_at: novoDocumento.validade || null,
+          status: 'Ativo',
+          uploaded_by: usuarioLogado?.authId || null,
+        })
+        .select(
+          'id, employee_id, document_type, title, storage_path, original_filename, mime_type, file_size, expires_at, status, created_at'
+        )
+        .single()
+
+      if (error || !data) {
+        await supabase.storage
+          .from('documentos-funcionarios')
+          .remove([caminho])
+        throw error || new Error('Documento não retornado após o cadastro.')
+      }
+
+      setNovoDocumento({
+        funcionario: '',
+        tipo: '',
+        titulo: '',
+        validade: '',
+        nomeArquivo: '',
+        arquivo: null,
+      })
+
+      setMostrarDocumento(false)
+      await carregarDocumentosSupabase()
+
+      registrarAuditoria(
+        'Documento enviado',
+        'Documentos',
+        `Documento "${novoDocumento.titulo.trim()}" enviado para ${funcionario.nome}.`,
+        'Atenção'
+      )
+
+      mostrarNotificacao(
+        `Documento de ${funcionario.nome} enviado com segurança.`,
+        'success'
+      )
+    } catch (erro) {
+      const mensagem =
+        erro instanceof Error
+          ? erro.message
+          : 'Não foi possível enviar o documento.'
+
+      console.error('Erro ao enviar documento:', erro)
+      mostrarNotificacao(`Erro no envio: ${mensagem}`, 'error')
+    } finally {
+      setEnviandoDocumento(false)
+    }
+  }
+
+  async function abrirDocumento(documento: Documento) {
+    if (!documento.storagePath) {
+      mostrarNotificacao('Caminho do arquivo não encontrado.', 'error')
+      return
+    }
+
+    const { data, error } = await supabase.storage
+      .from('documentos-funcionarios')
+      .createSignedUrl(documento.storagePath, 60)
+
+    if (error || !data?.signedUrl) {
+      console.error('Não foi possível gerar o link temporário:', error)
+      mostrarNotificacao(
+        `Não foi possível abrir o documento: ${error?.message || 'link indisponível'}`,
+        'error'
+      )
+      return
+    }
+
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  async function arquivarDocumento(documento: Documento) {
+    if (!documento.id) {
+      mostrarNotificacao('Documento sem identificação no Supabase.', 'error')
+      return
+    }
+
+    if (!window.confirm(`Arquivar "${documento.titulo || documento.nome}"?`)) {
+      return
+    }
+
+    const { error } = await supabase
+      .from('employee_documents')
+      .update({
+        status: 'Arquivado',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', documento.id)
+
+    if (error) {
+      console.error('Não foi possível arquivar o documento:', error)
+      mostrarNotificacao(
+        `Não foi possível arquivar: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    await carregarDocumentosSupabase()
+    mostrarNotificacao('Documento arquivado com sucesso.', 'success')
+  }
+
+  function escaparHtml(valor: unknown) {
+    return String(valor ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;')
   }
 
   function exportarPDF() {
-    mostrarNotificacao('PDF gerado no modo demonstrativo.', 'info')
+    const janela = window.open('', '_blank', 'width=1000,height=760')
+    if (!janela) {
+      mostrarNotificacao('O navegador bloqueou a janela do relatório. Libere pop-ups e tente novamente.', 'warning')
+      return
+    }
+
+    const totalDiarias = diarias.reduce((soma, item) => soma + item.valor, 0)
+    const pagos = pagamentos.filter((item) => item.status === 'Pago')
+    const totalPago = pagos.reduce((soma, item) => soma + item.valorTotal, 0)
+    const linhas = diarias
+      .slice()
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.data)}</td><td>${escaparHtml(item.tipoDia)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(moeda(item.valor))}</td></tr>`)
+      .join('')
+
+    janela.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório - Gestão de Diaristas</title><style>body{font-family:Arial,sans-serif;color:#2f2732;padding:28px}h1{margin:0 0 6px;color:#54266c}p{color:#6f6572}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0}.card{border:1px solid #ddd4e1;border-radius:12px;padding:12px}.card span{font-size:11px;color:#777}.card strong{display:block;font-size:18px;margin-top:6px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:8px;border-bottom:1px solid #e9e4ec;text-align:left}th{background:#f3edf6;color:#5b2c70}@media print{button{display:none}body{padding:0}}</style></head><body><h1>Gestão de Diaristas</h1><p>Sindicato • Operação DHL Mogi Mirim • Beta 1.0</p><div class="cards"><div class="card"><span>Funcionários ativos</span><strong>${funcionarios.filter((f) => f.status === 'Ativo').length}</strong></div><div class="card"><span>Registros de ponto</span><strong>${registrosPonto.filter((p) => p.status === 'Registrado').length}</strong></div><div class="card"><span>Valor em diárias</span><strong>${escaparHtml(moeda(totalDiarias))}</strong></div><div class="card"><span>Pagamentos realizados</span><strong>${escaparHtml(moeda(totalPago))}</strong></div></div><h2>Diárias</h2><table><thead><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Status</th><th>Total</th></tr></thead><tbody>${linhas || '<tr><td colspan="5">Nenhuma diária cadastrada.</td></tr>'}</tbody></table><script>window.onload=()=>{window.print()}</script></body></html>`)
+    janela.document.close()
+
+    registrarAuditoria('Relatório preparado para PDF', 'Relatórios', 'Relatório geral aberto para impressão/salvamento em PDF.', 'Informação')
+    mostrarNotificacao('Relatório aberto. Escolha “Salvar como PDF” na impressão.', 'success')
   }
 
   function exportarExcel() {
-    mostrarNotificacao('Excel gerado no modo demonstrativo.', 'info')
+    const linhasFuncionarios = funcionarios
+      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.cpf)}</td><td>${escaparHtml(item.funcao)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(item.chavePix)}</td></tr>`)
+      .join('')
+    const linhasDiarias = diarias
+      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.data)}</td><td>${escaparHtml(item.tipoDia)}</td><td>${item.diariaBase.toFixed(2)}</td><td>${item.adicional.toFixed(2)}</td><td>${item.vt.toFixed(2)}</td><td>${item.vr.toFixed(2)}</td><td>${item.valor.toFixed(2)}</td><td>${escaparHtml(item.status)}</td></tr>`)
+      .join('')
+    const linhasPagamentos = pagamentos
+      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.periodo)}</td><td>${item.quantidadeDiarias}</td><td>${item.valorTotal.toFixed(2)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(item.dataPagamento)}</td></tr>`)
+      .join('')
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"></head><body><h2>Funcionários</h2><table border="1"><tr><th>Nome</th><th>CPF</th><th>Função</th><th>Status</th><th>PIX</th></tr>${linhasFuncionarios}</table><br><h2>Diárias</h2><table border="1"><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Base</th><th>Adicional</th><th>VT</th><th>VR</th><th>Total</th><th>Status</th></tr>${linhasDiarias}</table><br><h2>Pagamentos</h2><table border="1"><tr><th>Funcionário</th><th>Período</th><th>Diárias</th><th>Total</th><th>Status</th><th>Data pagamento</th></tr>${linhasPagamentos}</table></body></html>`
+
+    const blob = new Blob(['\ufeff', html], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const hoje = new Date().toISOString().slice(0, 10)
+    link.href = url
+    link.download = `relatorio-sindicato-${hoje}.xls`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+
+    registrarAuditoria('Relatório Excel exportado', 'Relatórios', 'Relatório geral exportado em formato compatível com Excel.', 'Informação')
+    mostrarNotificacao('Relatório Excel exportado com sucesso.', 'success')
   }
 
-  function salvarConfiguracoes() {
+  async function salvarConfiguracoes() {
     if (!podeAdministrar) {
       mostrarNotificacao(
         'Somente o administrador pode alterar os valores das diárias.',
@@ -2826,6 +4345,8 @@ function App() {
       percentualFeriado,
       vt,
       vr,
+      horarioEntradaPadrao,
+      horarioSaidaPadrao,
     } = configuracaoTemporaria
 
     if (
@@ -2834,26 +4355,106 @@ function App() {
       percentualDomingo < 0 ||
       percentualFeriado < 0 ||
       vt < 0 ||
-      vr < 0
+      vr < 0 ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(horarioEntradaPadrao) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(horarioSaidaPadrao)
     ) {
       mostrarNotificacao(
-        'Confira os valores informados. A diária deve ser maior que zero e os demais valores não podem ser negativos.',
+        'Confira os valores informados. A diária deve ser maior que zero, os demais valores não podem ser negativos e os horários devem estar no formato HH:MM.',
         'error'
       )
       return
     }
 
-    setConfiguracaoValores({ ...configuracaoTemporaria })
+    const authId = usuarioLogado?.authId ?? null
+
+    const { data: configuracaoAtual, error: erroLeitura } = await supabase
+      .from('system_settings')
+      .select('setting_value')
+      .eq('setting_key', 'daily_rules')
+      .maybeSingle()
+
+    if (erroLeitura) {
+      console.error('Não foi possível ler a configuração atual:', erroLeitura)
+      mostrarNotificacao(
+        `Erro ao preparar as configurações: ${erroLeitura.message}`,
+        'error'
+      )
+      return
+    }
+
+    const valorAtual =
+      configuracaoAtual?.setting_value &&
+      typeof configuracaoAtual.setting_value === 'object'
+        ? (configuracaoAtual.setting_value as Record<string, unknown>)
+        : {}
+
+    const novoValor = {
+      ...valorAtual,
+      dailyBase: diariaBase,
+      saturdayPercentage: percentualSabado,
+      sundayPercentage: percentualDomingo,
+      holidayPercentage: percentualFeriado,
+      transport: vt,
+      meal: vr,
+      standardStart: horarioEntradaPadrao,
+      standardEnd: horarioSaidaPadrao,
+    }
+
+    const { data, error } = await supabase
+      .from('system_settings')
+      .upsert(
+        {
+          setting_key: 'daily_rules',
+          setting_value: novoValor,
+          description: 'Regras gerais de diária e jornada.',
+          updated_by: authId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'setting_key' }
+      )
+      .select('id, setting_key, setting_value, updated_at')
+      .single()
+
+    if (error || !data) {
+      console.error('Não foi possível salvar as configurações no Supabase:', error)
+      mostrarNotificacao(
+        `Erro ao salvar configurações: ${error?.message ?? 'o banco não confirmou a gravação.'}`,
+        'error'
+      )
+      return
+    }
+
+    const valorConfirmado = data.setting_value as Record<string, unknown>
+    const configuracaoConfirmada: ConfiguracaoValores = {
+      diariaBase: Number(valorConfirmado.dailyBase ?? diariaBase),
+      percentualSabado: Number(
+        valorConfirmado.saturdayPercentage ?? percentualSabado
+      ),
+      percentualDomingo: Number(
+        valorConfirmado.sundayPercentage ?? percentualDomingo
+      ),
+      percentualFeriado: Number(
+        valorConfirmado.holidayPercentage ?? percentualFeriado
+      ),
+      vt: Number(valorConfirmado.transport ?? vt),
+      vr: Number(valorConfirmado.meal ?? vr),
+      horarioEntradaPadrao: String(valorConfirmado.standardStart ?? horarioEntradaPadrao),
+      horarioSaidaPadrao: String(valorConfirmado.standardEnd ?? horarioSaidaPadrao),
+    }
+
+    setConfiguracaoValores(configuracaoConfirmada)
+    setConfiguracaoTemporaria(configuracaoConfirmada)
 
     registrarAuditoria(
       'Valores da diária atualizados',
       'Configurações',
-      `Diária-base ${moeda(diariaBase)}; sábado ${percentualSabado}%; domingo ${percentualDomingo}%; feriado ${percentualFeriado}%; VT ${moeda(vt)}; VR ${moeda(vr)}.`,
+      `Diária-base ${moeda(configuracaoConfirmada.diariaBase)}; sábado ${configuracaoConfirmada.percentualSabado}%; domingo ${configuracaoConfirmada.percentualDomingo}%; feriado ${configuracaoConfirmada.percentualFeriado}%; VT ${moeda(configuracaoConfirmada.vt)}; VR ${moeda(configuracaoConfirmada.vr)}; jornada ${configuracaoConfirmada.horarioEntradaPadrao}–${configuracaoConfirmada.horarioSaidaPadrao}.`,
       'Atenção'
     )
 
     mostrarNotificacao(
-      'Valores atualizados. As novas diárias usarão as novas regras.',
+      'Configurações confirmadas e salvas no Supabase.',
       'success'
     )
   }
@@ -2922,41 +4523,9 @@ function App() {
 
       setFuncionarioReconhecido(funcionarioDemo.nome)
       setHorarioTotem(horario)
-
-      setRegistrosPonto((atuais) => {
-        const indice = atuais.findIndex(
-          (registro) =>
-            registro.nome === funcionarioDemo.nome &&
-            registro.data === data
-        )
-
-        if (indice >= 0) {
-          return atuais.map((registro, registroIndex) =>
-            registroIndex === indice
-              ? {
-                  ...registro,
-                  funcao: funcionarioDemo.funcao,
-                  horario,
-                  status: 'Registrado',
-                  metodo: 'Reconhecimento facial',
-                }
-              : registro
-          )
-        }
-
-        return [
-          {
-            nome: funcionarioDemo.nome,
-            funcao: funcionarioDemo.funcao,
-            data,
-            horario,
-            status: 'Registrado',
-            metodo: 'Reconhecimento facial',
-          },
-          ...atuais,
-        ]
-      })
-
+      setMensagemErroTotem(
+        'Demonstração visual: nenhum ponto foi gravado. O registro facial real será liberado somente após a integração com provedor biométrico e prova de vida.'
+      )
       setEstadoTotem('sucesso')
     }, 1800)
   }
@@ -3027,12 +4596,12 @@ function App() {
     .filter((pagamento) => pagamento.status === 'Aguardando')
     .reduce((total, pagamento) => total + pagamento.valorTotal, 0)
 
-  const documentosEnviados = documentos.filter(
-    (documento) => documento.status === 'Enviado'
+  const documentosAtivos = documentos.filter(
+    (documento) => documento.status === 'Ativo'
   ).length
 
-  const documentosPendentes = documentos.filter(
-    (documento) => documento.status === 'Pendente'
+  const documentosArquivados = documentos.filter(
+    (documento) => documento.status === 'Arquivado'
   ).length
 
   const funcionariosAtivos = funcionarios.filter(
@@ -3085,27 +4654,34 @@ function App() {
     </div>
   ) : null
 
-  function registrarAuditoria(
+  async function registrarAuditoria(
     acao: string,
     modulo: string,
     detalhe: string,
     nivel: RegistroAuditoria['nivel'] = 'Informação',
-    usuarioForcado?: UsuarioSistema | null
+    usuarioForcado?: UsuarioSistema | null,
+    entidade?: string | null,
+    entityId?: string | null
   ) {
     const usuarioEvento = usuarioForcado ?? usuarioLogado
 
-    const novoRegistro: RegistroAuditoria = {
-      id: Date.now() + Math.floor(Math.random() * 1000),
-      dataHora: new Date().toLocaleString('pt-BR'),
-      usuario: usuarioEvento?.nome || 'Sistema',
-      perfil: usuarioEvento?.perfil || 'Sistema',
-      acao,
-      modulo,
-      detalhe,
-      nivel,
+    const { error } = await supabase.rpc('write_audit', {
+      p_action: acao,
+      p_module: modulo,
+      p_details: detalhe,
+      p_severity: nivel,
+      p_entity_type: entidade ?? null,
+      p_entity_id: entityId ?? null,
+    })
+
+    if (error) {
+      console.error('Não foi possível registrar a auditoria no Supabase:', error)
+      return
     }
 
-    setRegistrosAuditoria((atuais) => [novoRegistro, ...atuais].slice(0, 300))
+    if (usuarioEvento?.perfil === 'Administrador') {
+      await carregarAuditoriaSupabase()
+    }
   }
 
   const telasPorPerfil: Record<PerfilAcesso, Tela[]> = {
@@ -3169,70 +4745,397 @@ function App() {
     setTela(telaDestino)
   }
 
-  function entrarAreaAdministrativa(e: React.FormEvent) {
+
+  function senhaForte(senha: string) {
+    return (
+      senha.length >= 8 &&
+      /[A-Z]/.test(senha) &&
+      /[a-z]/.test(senha) &&
+      /\d/.test(senha) &&
+      /[^A-Za-z0-9]/.test(senha)
+    )
+  }
+
+  function mensagemRegraSenha() {
+    return 'Use pelo menos 8 caracteres, com letra maiúscula, minúscula, número e símbolo.'
+  }
+
+  function emailValido(email: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  }
+
+  function celularValido(celular: string) {
+    return celular.replace(/\D/g, '').length >= 10
+  }
+
+  function fecharRecuperacaoSenha() {
+    setRecuperacaoAberta(false)
+    setRecuperacaoEtapa('identificacao')
+    setRecuperacaoIdentificador('')
+    setRecuperacaoCanal('email')
+    setRecuperacaoUsuarioId(null)
+    setRecuperacaoCodigoGerado('')
+    setRecuperacaoCodigoDigitado('')
+    setRecuperacaoCodigoExpiraEm(null)
+    setRecuperacaoTentativasCodigo(0)
+    setRecuperacaoNovaSenha('')
+    setRecuperacaoConfirmarSenha('')
+  }
+
+  async function iniciarRecuperacaoSenha(e: React.FormEvent) {
     e.preventDefault()
 
-    const loginDigitado = usuarioLogin.trim().toLowerCase()
+    const email = recuperacaoIdentificador.trim().toLowerCase()
 
-    const usuarioEncontrado = usuariosSistema.find(
-      (item) =>
-        item.usuario.toLowerCase() === loginDigitado &&
-        item.senha === senhaLogin
-    )
-
-    if (!usuarioEncontrado) {
-      setErroLogin('Usuário ou senha incorretos.')
+    if (!emailValido(email)) {
+      mostrarNotificacao('Informe o e-mail usado para acessar o sistema.', 'warning')
       return
     }
 
-    if (usuarioEncontrado.status !== 'Ativo') {
-      setErroLogin('Este usuário está inativo. Procure um administrador.')
-      return
-    }
+    const redirectTo = `${window.location.origin}${window.location.pathname}`
 
-    const usuarioAtualizado = {
-      ...usuarioEncontrado,
-      ultimoAcesso: 'Agora',
-    }
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo,
+    })
 
-    setUsuariosSistema((atuais) =>
-      atuais.map((item) =>
-        item.id === usuarioEncontrado.id ? usuarioAtualizado : item
+    if (error) {
+      console.error('Erro ao solicitar recuperação de senha:', error)
+      mostrarNotificacao(
+        'Não foi possível enviar o e-mail de recuperação agora. Tente novamente.',
+        'error'
       )
-    )
-
-    setUsuarioLogado(usuarioAtualizado)
-    setErroLogin('')
-    setSenhaLogin('')
-
-    if (usuarioAtualizado.perfil === 'Consulta') {
-      setTela('dashboard')
-    } else {
-      setTela('operacao')
+      return
     }
-
-    setModoAcesso('admin')
-
-    registrarAuditoria(
-      'Login realizado',
-      'Acesso',
-      `Acesso autorizado para o perfil ${usuarioAtualizado.perfil}.`,
-      'Informação',
-      usuarioAtualizado
-    )
 
     mostrarNotificacao(
-      `Bem-vindo, ${usuarioAtualizado.nome}. Perfil: ${usuarioAtualizado.perfil}.`,
+      'Se esse e-mail estiver cadastrado, você receberá um link para redefinir a senha.',
+      'success'
+    )
+    setRecuperacaoAberta(false)
+    setRecuperacaoIdentificador('')
+  }
+
+  async function concluirRecuperacaoSenha(e: React.FormEvent) {
+    e.preventDefault()
+
+    if (!senhaForte(recuperacaoNovaSenha)) {
+      mostrarNotificacao(mensagemRegraSenha(), 'warning')
+      return
+    }
+
+    if (recuperacaoNovaSenha !== recuperacaoConfirmarSenha) {
+      mostrarNotificacao('As novas senhas não coincidem.', 'warning')
+      return
+    }
+
+    const { error } = await supabase.auth.updateUser({
+      password: recuperacaoNovaSenha,
+    })
+
+    if (error) {
+      console.error('Erro ao concluir recuperação de senha:', error)
+      mostrarNotificacao(
+        error.message || 'Não foi possível redefinir a senha.',
+        'error'
+      )
+      return
+    }
+
+    await registrarAuditoria(
+      'Senha recuperada',
+      'Acesso',
+      'Senha redefinida pelo fluxo real de recuperação do Supabase Auth.',
+      'Crítico'
+    )
+
+    setRecuperacaoNovaSenha('')
+    setRecuperacaoConfirmarSenha('')
+    setRecuperacaoEtapa('identificacao')
+    setRecuperacaoAberta(false)
+
+    mostrarNotificacao(
+      'Senha redefinida com sucesso. Você já pode usar a nova senha.',
       'success'
     )
   }
 
-  function sairAreaAdministrativa() {
-    registrarAuditoria(
-      'Logout realizado',
+  async function alterarMinhaSenha(e: React.FormEvent) {
+    e.preventDefault()
+
+    if (!usuarioLogado) return
+
+    if (!minhaSenhaAtual.trim()) {
+      mostrarNotificacao('Informe sua senha atual.', 'warning')
+      return
+    }
+
+    if (!senhaForte(minhaNovaSenha)) {
+      mostrarNotificacao(mensagemRegraSenha(), 'warning')
+      return
+    }
+
+    if (minhaNovaSenha !== minhaConfirmarSenha) {
+      mostrarNotificacao(
+        'A confirmação da nova senha não confere.',
+        'warning'
+      )
+      return
+    }
+
+    if (minhaNovaSenha === minhaSenhaAtual) {
+      mostrarNotificacao(
+        'A nova senha deve ser diferente da senha atual.',
+        'warning'
+      )
+      return
+    }
+
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError || !authData.user?.email) {
+      console.error(
+        'Não foi possível identificar o usuário autenticado:',
+        authError
+      )
+      mostrarNotificacao(
+        'Sua sessão não pôde ser validada. Entre novamente e tente outra vez.',
+        'warning'
+      )
+      return
+    }
+
+    const usuarioAuth = authData.user
+    const emailUsuario = usuarioAuth.email
+
+    if (!emailUsuario) {
+      mostrarNotificacao(
+        'Sua conta autenticada não possui e-mail de acesso.',
+        'error'
+      )
+      return
+    }
+
+    const {
+      data: reauthData,
+      error: reauthError,
+    } = await supabase.auth.signInWithPassword({
+      email: emailUsuario,
+      password: minhaSenhaAtual,
+    })
+
+    if (
+      reauthError ||
+      !reauthData.user ||
+      reauthData.user.id !== usuarioAuth.id
+    ) {
+      console.error(
+        'Falha ao confirmar a senha atual:',
+        reauthError
+      )
+      mostrarNotificacao(
+        'A senha atual está incorreta.',
+        'warning'
+      )
+      return
+    }
+
+    const { error: updateError } =
+      await supabase.auth.updateUser({
+        password: minhaNovaSenha,
+      })
+
+    if (updateError) {
+      console.error(
+        'Erro ao alterar senha no Supabase Auth:',
+        updateError
+      )
+      mostrarNotificacao(
+        updateError.message ||
+          'Não foi possível alterar sua senha.',
+        'error'
+      )
+      return
+    }
+
+    await registrarAuditoria(
+      'Senha alterada',
       'Acesso',
-      'Sessão administrativa encerrada pelo usuário.'
+      'O usuário conectado alterou a própria senha no Supabase Auth.',
+      'Crítico',
+      usuarioLogado
     )
+
+    setMinhaSenhaAtual('')
+    setMinhaNovaSenha('')
+    setMinhaConfirmarSenha('')
+    setMostrarAlterarMinhaSenha(false)
+
+    mostrarNotificacao(
+      'Sua senha foi alterada com sucesso no Supabase.',
+      'success'
+    )
+  }
+
+  function idNumericoDoSupabase(id: string) {
+    let hash = 0
+    for (let i = 0; i < id.length; i += 1) {
+      hash = (hash * 31 + id.charCodeAt(i)) | 0
+    }
+    return Math.abs(hash) || 1
+  }
+
+  async function carregarUsuariosSupabase() {
+    if (usuarioLogado?.perfil !== 'Administrador') return
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, phone, role, status, last_access_at, created_at')
+      .order('created_at', { ascending: true })
+
+    if (error) {
+      console.error('Não foi possível carregar os usuários reais:', error)
+      mostrarNotificacao('Não foi possível carregar os usuários e acessos.', 'error')
+      return
+    }
+
+    const usuariosReais: UsuarioSistema[] = (data ?? []).map((perfil) => ({
+      id: idNumericoDoSupabase(perfil.id),
+      authId: perfil.id,
+      nome: perfil.full_name || perfil.email || 'Usuário',
+      usuario: perfil.email || '',
+      senha: '',
+      email: perfil.email || '',
+      celular: perfil.phone || '',
+      perfil: perfil.role as PerfilAcesso,
+      status: perfil.status as UsuarioSistema['status'],
+      ultimoAcesso: perfil.last_access_at
+        ? new Date(perfil.last_access_at).toLocaleString('pt-BR')
+        : 'Nunca acessou',
+      criadoEm: perfil.created_at
+        ? new Date(perfil.created_at).toLocaleString('pt-BR')
+        : undefined,
+    }))
+
+    setUsuariosSistema(usuariosReais)
+  }
+
+  async function carregarPerfilAutenticado(authUser: { id: string; email?: string | null }) {
+    const { data: perfil, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, phone, role, status, last_access_at')
+      .eq('id', authUser.id)
+      .single()
+
+    if (error || !perfil) {
+      console.error('Não foi possível carregar o perfil do usuário:', error)
+      setErroLogin('Sua conta existe, mas o perfil de acesso não pôde ser carregado.')
+      await supabase.auth.signOut()
+      return null
+    }
+
+    if (perfil.status !== 'Ativo') {
+      setErroLogin('Este usuário está inativo. Procure um administrador.')
+      await supabase.auth.signOut()
+      return null
+    }
+
+    const perfilAcesso = perfil.role as PerfilAcesso
+
+    if (!['Administrador', 'Supervisor', 'Consulta'].includes(perfilAcesso)) {
+      setErroLogin('Perfil de acesso inválido. Procure um administrador.')
+      await supabase.auth.signOut()
+      return null
+    }
+
+    const usuarioReal: UsuarioSistema = {
+      id: idNumericoDoSupabase(authUser.id),
+      authId: authUser.id,
+      nome: perfil.full_name || authUser.email || 'Usuário',
+      usuario: authUser.email || perfil.email || '',
+      senha: '',
+      email: perfil.email || authUser.email || '',
+      celular: perfil.phone || '',
+      perfil: perfilAcesso,
+      status: 'Ativo',
+      ultimoAcesso: 'Agora',
+    }
+
+    setUsuarioLogado(usuarioReal)
+    setErroLogin('')
+    setModoAcesso('admin')
+    setTela(perfilAcesso === 'Consulta' ? 'dashboard' : 'operacao')
+
+    void supabase
+      .from('profiles')
+      .update({ last_access_at: new Date().toISOString() })
+      .eq('id', authUser.id)
+
+    return usuarioReal
+  }
+
+  async function entrarAreaAdministrativa(e: React.FormEvent) {
+    e.preventDefault()
+
+    const email = usuarioLogin.trim().toLowerCase()
+
+    if (!email || !senhaLogin) {
+      setErroLogin('Informe seu e-mail e sua senha.')
+      return
+    }
+
+    setErroLogin('')
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password: senhaLogin,
+    })
+
+    if (error || !data.user) {
+      console.error('ERRO REAL DO SUPABASE:', error)
+      setErroLogin(
+        error?.message || 'Não foi possível realizar o login.'
+      )
+      setSenhaLogin('')
+      return
+    }
+
+    const usuarioReal = await carregarPerfilAutenticado(data.user)
+
+    if (!usuarioReal) return
+
+    setSenhaLogin('')
+
+    registrarAuditoria(
+      'Login realizado',
+      'Acesso',
+      `Acesso real autorizado pelo Supabase para o perfil ${usuarioReal.perfil}.`,
+      'Informação',
+      usuarioReal
+    )
+
+    mostrarNotificacao(
+      `Bem-vindo, ${usuarioReal.nome}. Perfil: ${usuarioReal.perfil}.`,
+      'success'
+    )
+  }
+
+  async function sairAreaAdministrativa() {
+    const usuarioSaindo = usuarioLogado
+
+    if (usuarioSaindo) {
+      await registrarAuditoria(
+        'Logout realizado',
+        'Acesso',
+        'Sessão administrativa encerrada pelo usuário.',
+        'Informação',
+        usuarioSaindo,
+        'profile',
+        usuarioSaindo.authId ?? null
+      )
+    }
+
+    await supabase.auth.signOut()
 
     setUsuarioLogin('')
     setSenhaLogin('')
@@ -3242,57 +5145,375 @@ function App() {
     setModoAcesso('inicio')
   }
 
-  function salvarNovoUsuario(e: React.FormEvent) {
+  async function salvarNovoUsuario(e: React.FormEvent) {
     e.preventDefault()
+
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente Administradores ativos podem criar usuários.',
+        'warning'
+      )
+      return
+    }
 
     if (
       !novoUsuarioNome.trim() ||
-      !novoUsuarioLogin.trim() ||
-      !novoUsuarioSenha.trim()
+      !novoUsuarioEmail.trim() ||
+      !novoUsuarioCelular.trim() ||
+      !novoUsuarioSenha.trim() ||
+      !novoUsuarioConfirmarSenha.trim()
     ) {
-      mostrarNotificacao('Preencha nome, usuário e senha.', 'warning')
+      mostrarNotificacao(
+        'Preencha nome, e-mail, celular, senha e confirmação da senha.',
+        'warning'
+      )
       return
     }
 
-    const loginExiste = usuariosSistema.some(
-      (item) =>
-        item.usuario.toLowerCase() === novoUsuarioLogin.trim().toLowerCase()
-    )
-
-    if (loginExiste) {
-      mostrarNotificacao('Esse nome de usuário já está em uso.', 'warning')
+    if (!emailValido(novoUsuarioEmail)) {
+      mostrarNotificacao('Informe um e-mail válido.', 'warning')
       return
     }
 
-    const novo: UsuarioSistema = {
-      id: Date.now(),
-      nome: novoUsuarioNome.trim(),
-      usuario: novoUsuarioLogin.trim(),
-      senha: novoUsuarioSenha,
-      perfil: novoUsuarioPerfil,
-      status: 'Ativo',
-      ultimoAcesso: 'Nunca acessou',
+    if (!celularValido(novoUsuarioCelular)) {
+      mostrarNotificacao('Informe um celular válido com DDD.', 'warning')
+      return
     }
 
-    setUsuariosSistema((atuais) => [...atuais, novo])
+    if (!senhaForte(novoUsuarioSenha)) {
+      mostrarNotificacao(mensagemRegraSenha(), 'warning')
+      return
+    }
+
+    if (novoUsuarioSenha !== novoUsuarioConfirmarSenha) {
+      mostrarNotificacao('As senhas informadas não coincidem.', 'warning')
+      return
+    }
+
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError || !session?.access_token) {
+      console.error('Erro ao recuperar sessão antes da Edge Function:', sessionError)
+      mostrarNotificacao(
+        'Sua sessão não pôde ser validada. Saia do sistema, entre novamente e tente outra vez.',
+        'warning'
+      )
+      return
+    }
+
+    const { data, error } = await supabase.functions.invoke('admin-create-user', {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: {
+        full_name: novoUsuarioNome.trim(),
+        email: novoUsuarioEmail.trim().toLowerCase(),
+        phone: novoUsuarioCelular.trim(),
+        password: novoUsuarioSenha,
+        role: novoUsuarioPerfil,
+      },
+    })
+
+    if (error) {
+      console.error('Erro ao chamar admin-create-user:', error)
+
+      let mensagem = error.message || 'Não foi possível criar o usuário.'
+
+      try {
+        const contexto = (error as { context?: Response }).context
+        if (contexto) {
+          const resposta = await contexto.clone().json()
+          if (resposta?.error) mensagem = String(resposta.error)
+        }
+      } catch {
+        // Mantém a mensagem original caso o corpo da resposta não seja JSON.
+      }
+
+      mostrarNotificacao(mensagem, 'error')
+      return
+    }
+
+    if (!data?.success) {
+      mostrarNotificacao(
+        data?.error || 'O servidor não confirmou a criação do usuário.',
+        'error'
+      )
+      return
+    }
+
+    // A Edge Function cria o usuário como Ativo. Se o administrador escolheu
+    // Inativo, aplicamos o status imediatamente usando a policy admin da profiles.
+    if (novoUsuarioStatus === 'Inativo' && data.user?.id) {
+      const { error: statusError } = await supabase
+        .from('profiles')
+        .update({
+          status: 'Inativo',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', data.user.id)
+
+      if (statusError) {
+        console.error('Usuário criado, mas o status inicial falhou:', statusError)
+        mostrarNotificacao(
+          'Usuário criado, mas não foi possível aplicar o status Inativo.',
+          'warning'
+        )
+      }
+    }
+
     setNovoUsuarioNome('')
     setNovoUsuarioLogin('')
+    setNovoUsuarioEmail('')
+    setNovoUsuarioCelular('')
     setNovoUsuarioSenha('')
+    setNovoUsuarioConfirmarSenha('')
     setNovoUsuarioPerfil('Supervisor')
+    setNovoUsuarioStatus('Ativo')
     setMostrarNovoUsuario(false)
 
-    registrarAuditoria(
-      'Usuário criado',
-      'Usuários',
-      `Novo acesso criado para ${novo.nome} com perfil ${novo.perfil}.`,
-      'Atenção'
-    )
+    await carregarUsuariosSupabase()
 
-    mostrarNotificacao('Novo usuário criado com sucesso.', 'success')
+    mostrarNotificacao(
+      'Usuário criado no Supabase Auth e perfil confirmado no banco.',
+      'success'
+    )
   }
 
-  function alternarStatusUsuario(id: number) {
-    if (usuarioLogado?.id === id) {
+  function iniciarEdicaoUsuario(usuario: UsuarioSistema) {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode editar usuários.',
+        'warning'
+      )
+      return
+    }
+
+    setMostrarNovoUsuario(false)
+    setUsuarioEditandoId(usuario.id)
+    setUsuarioEditandoNome(usuario.nome)
+    setUsuarioEditandoLogin(usuario.usuario)
+    setUsuarioEditandoEmail(usuario.email || '')
+    setUsuarioEditandoCelular(usuario.celular || '')
+    setUsuarioEditandoPerfil(usuario.perfil)
+    setUsuarioEditandoStatus(usuario.status)
+    setUsuarioEditandoNovaSenha('')
+    setUsuarioEditandoConfirmarSenha('')
+  }
+
+  function cancelarEdicaoUsuario() {
+    setUsuarioEditandoId(null)
+    setUsuarioEditandoNome('')
+    setUsuarioEditandoLogin('')
+    setUsuarioEditandoEmail('')
+    setUsuarioEditandoCelular('')
+    setUsuarioEditandoPerfil('Supervisor')
+    setUsuarioEditandoStatus('Ativo')
+    setUsuarioEditandoNovaSenha('')
+    setUsuarioEditandoConfirmarSenha('')
+  }
+
+  async function salvarEdicaoUsuario(e: React.FormEvent) {
+    e.preventDefault()
+
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode editar usuários.',
+        'warning'
+      )
+      return
+    }
+
+    if (usuarioEditandoId === null) return
+
+    const usuarioOriginal = usuariosSistema.find(
+      (item) => item.id === usuarioEditandoId
+    )
+
+    if (!usuarioOriginal?.authId) {
+      mostrarNotificacao('Usuário real do Supabase não encontrado.', 'error')
+      cancelarEdicaoUsuario()
+      return
+    }
+
+    if (
+      !usuarioEditandoNome.trim() ||
+      !usuarioEditandoEmail.trim() ||
+      !usuarioEditandoCelular.trim()
+    ) {
+      mostrarNotificacao('Preencha nome, e-mail e celular.', 'warning')
+      return
+    }
+
+    if (!emailValido(usuarioEditandoEmail)) {
+      mostrarNotificacao('Informe um e-mail válido.', 'warning')
+      return
+    }
+
+    if (!celularValido(usuarioEditandoCelular)) {
+      mostrarNotificacao('Informe um celular válido com DDD.', 'warning')
+      return
+    }
+
+    const emailExiste = usuariosSistema.some(
+      (item) =>
+        item.id !== usuarioEditandoId &&
+        (item.email || '').toLowerCase() ===
+          usuarioEditandoEmail.trim().toLowerCase()
+    )
+
+    if (emailExiste) {
+      mostrarNotificacao(
+        'Esse e-mail já está vinculado a outro usuário.',
+        'warning'
+      )
+      return
+    }
+
+    if (usuarioEditandoNovaSenha || usuarioEditandoConfirmarSenha) {
+      if (!senhaForte(usuarioEditandoNovaSenha)) {
+        mostrarNotificacao(mensagemRegraSenha(), 'warning')
+        return
+      }
+
+      if (usuarioEditandoNovaSenha !== usuarioEditandoConfirmarSenha) {
+        mostrarNotificacao(
+          'A confirmação da nova senha não confere.',
+          'warning'
+        )
+        return
+      }
+    }
+
+    const editandoProprioUsuario =
+      usuarioLogado.authId === usuarioOriginal.authId
+
+    if (editandoProprioUsuario) {
+      if (usuarioEditandoStatus !== 'Ativo') {
+        mostrarNotificacao(
+          'Você não pode desativar a própria conta enquanto está conectado.',
+          'warning'
+        )
+        return
+      }
+
+      if (usuarioEditandoPerfil !== 'Administrador') {
+        mostrarNotificacao(
+          'O Administrador conectado não pode remover o próprio acesso administrativo.',
+          'warning'
+        )
+        return
+      }
+    }
+
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError || !session?.access_token) {
+      console.error(
+        'Erro ao recuperar sessão antes de editar usuário:',
+        sessionError
+      )
+      mostrarNotificacao(
+        'Sua sessão não pôde ser validada. Entre novamente e tente outra vez.',
+        'warning'
+      )
+      return
+    }
+
+    const { data, error } = await supabase.functions.invoke(
+      'admin-update-user',
+      {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: {
+          user_id: usuarioOriginal.authId,
+          full_name: usuarioEditandoNome.trim(),
+          email: usuarioEditandoEmail.trim().toLowerCase(),
+          phone: usuarioEditandoCelular.trim(),
+          role: usuarioEditandoPerfil,
+          status: usuarioEditandoStatus,
+          password: usuarioEditandoNovaSenha || undefined,
+        },
+      }
+    )
+
+    if (error) {
+      console.error('Erro ao chamar admin-update-user:', error)
+
+      let mensagem = error.message || 'Não foi possível atualizar o usuário.'
+
+      try {
+        const contexto = (error as { context?: Response }).context
+        if (contexto) {
+          const resposta = await contexto.clone().json()
+          if (resposta?.error) mensagem = String(resposta.error)
+        }
+      } catch {
+        // Mantém a mensagem original caso o corpo não seja JSON.
+      }
+
+      mostrarNotificacao(mensagem, 'error')
+      return
+    }
+
+    if (!data?.success) {
+      mostrarNotificacao(
+        data?.error || 'O servidor não confirmou a atualização do usuário.',
+        'error'
+      )
+      return
+    }
+
+    cancelarEdicaoUsuario()
+    await carregarUsuariosSupabase()
+
+    if (editandoProprioUsuario) {
+      setUsuarioLogado((atual) =>
+        atual
+          ? {
+              ...atual,
+              nome: usuarioEditandoNome.trim(),
+              usuario: usuarioEditandoEmail.trim().toLowerCase(),
+              email: usuarioEditandoEmail.trim().toLowerCase(),
+              celular: usuarioEditandoCelular.trim(),
+              perfil: usuarioEditandoPerfil,
+              status: usuarioEditandoStatus,
+            }
+          : atual
+      )
+    }
+
+    mostrarNotificacao(
+      usuarioEditandoNovaSenha
+        ? 'Usuário e senha atualizados no Supabase.'
+        : 'Usuário atualizado no Supabase.',
+      'success'
+    )
+  }
+
+  async function alternarStatusUsuario(id: number) {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao(
+        'Somente o Administrador Geral pode ativar ou inativar usuários.',
+        'warning'
+      )
+      return
+    }
+
+    const usuarioAlterado = usuariosSistema.find((item) => item.id === id)
+
+    if (!usuarioAlterado?.authId) {
+      mostrarNotificacao('Usuário real do Supabase não encontrado.', 'error')
+      return
+    }
+
+    if (usuarioLogado.authId === usuarioAlterado.authId) {
       mostrarNotificacao(
         'Você não pode desativar o próprio usuário enquanto está conectado.',
         'warning'
@@ -3300,29 +5521,67 @@ function App() {
       return
     }
 
-    setUsuariosSistema((atuais) =>
-      atuais.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: item.status === 'Ativo' ? 'Inativo' : 'Ativo',
-            }
-          : item
+    const novoStatus =
+      usuarioAlterado.status === 'Ativo' ? 'Inativo' : 'Ativo'
+
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError || !session?.access_token) {
+      mostrarNotificacao(
+        'Sua sessão não pôde ser validada. Entre novamente e tente outra vez.',
+        'warning'
       )
+      return
+    }
+
+    const { data, error } = await supabase.functions.invoke(
+      'admin-update-user',
+      {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: {
+          user_id: usuarioAlterado.authId,
+          status: novoStatus,
+        },
+      }
     )
 
-    const usuarioAlterado = usuariosSistema.find((item) => item.id === id)
+    if (error) {
+      console.error('Erro ao alterar status do usuário:', error)
 
-    registrarAuditoria(
-      'Status de usuário alterado',
-      'Usuários',
-      usuarioAlterado
-        ? `O acesso de ${usuarioAlterado.nome} teve o status alterado.`
-        : 'Status de acesso alterado.',
-      'Atenção'
+      let mensagem = error.message || 'Não foi possível alterar o status.'
+
+      try {
+        const contexto = (error as { context?: Response }).context
+        if (contexto) {
+          const resposta = await contexto.clone().json()
+          if (resposta?.error) mensagem = String(resposta.error)
+        }
+      } catch {
+        // Mantém a mensagem original caso o corpo não seja JSON.
+      }
+
+      mostrarNotificacao(mensagem, 'error')
+      return
+    }
+
+    if (!data?.success) {
+      mostrarNotificacao(
+        data?.error || 'O servidor não confirmou a alteração de status.',
+        'error'
+      )
+      return
+    }
+
+    await carregarUsuariosSupabase()
+    mostrarNotificacao(
+      `Usuário ${novoStatus === 'Ativo' ? 'reativado' : 'inativado'} no Supabase.`,
+      'success'
     )
-
-    mostrarNotificacao('Status do usuário atualizado.', 'success')
   }
 
   if (modoAcesso === 'inicio') {
@@ -3397,6 +5656,21 @@ function App() {
               >
                 Gestão de Diaristas
               </strong>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  marginTop: '7px',
+                  padding: '4px 8px',
+                  borderRadius: '999px',
+                  background: '#f3ecf6',
+                  color: '#69347f',
+                  fontSize: '9px',
+                  fontWeight: 850,
+                  letterSpacing: '.4px',
+                }}
+              >
+                BETA 1.0
+              </span>
             </div>
           </div>
 
@@ -3710,7 +5984,7 @@ function App() {
                   marginBottom: '7px',
                 }}
               >
-                Usuário
+                E-mail
               </label>
 
               <input
@@ -3720,8 +5994,8 @@ function App() {
                   setUsuarioLogin(e.target.value)
                   setErroLogin('')
                 }}
-                placeholder="Digite seu usuário"
-                autoComplete="username"
+                placeholder="seuemail@empresa.com"
+                autoComplete="email"
                 style={{
                   width: '100%',
                   height: '45px',
@@ -3795,38 +6069,24 @@ function App() {
               </div>
             </div>
 
-            <div
-              style={{
-                margin: '0 0 14px',
-                padding: '12px',
-                borderRadius: '11px',
-                background: '#f8f4fa',
-                border: '1px solid #eadfee',
-              }}
-            >
-              <strong
+            <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '-3px 0 14px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setRecuperacaoAberta(true)
+                  setErroLogin('')
+                }}
                 style={{
-                  display: 'block',
-                  color: '#5d3b6c',
-                  fontSize: '9px',
-                  marginBottom: '6px',
+                  border: 'none', background: 'transparent', color: '#6b2c91',
+                  padding: 0, cursor: 'pointer', fontSize: '10px', fontWeight: 800,
                 }}
               >
-                Acessos demonstrativos
-              </strong>
+                Esqueci minha senha
+              </button>
+            </div>
 
-              <div
-                style={{
-                  display: 'grid',
-                  gap: '4px',
-                  color: '#796f7d',
-                  fontSize: '9px',
-                }}
-              >
-                <span><b>Administrador:</b> admin / 1234</span>
-                <span><b>Supervisor:</b> supervisor / 1234</span>
-                <span><b>Consulta:</b> consulta / 1234</span>
-              </div>
+            <div style={{ margin: '0 0 14px', padding: '11px 12px', borderRadius: '11px', background: '#f5f9ff', border: '1px solid #dce8f7', color: '#526273', fontSize: '10px', lineHeight: 1.55 }}>
+              <strong style={{ color: '#37475a' }}>Acesso seguro:</strong>{' '}entre com o e-mail e a senha cadastrados no Supabase. A sessão permanece ativa até você sair da conta.
             </div>
 
             {erroLogin && (
@@ -3878,14 +6138,81 @@ function App() {
               }}
             >
               <strong style={{ color: '#5f5065' }}>
-                Acesso demonstrativo:
+                Autenticação real ativa.
               </strong>{' '}
-              usuário <strong>admin</strong> e senha <strong>1234</strong>.
-              Quando o sistema tiver backend, essa autenticação será substituída
-              por segurança real.
+              O login e a sessão agora são validados pelo Supabase Auth. As permissões são carregadas da tabela <strong>profiles</strong> antes de liberar o painel.
             </div>
           </form>
         </div>
+
+        {recuperacaoAberta && (
+          <div
+            onClick={fecharRecuperacaoSenha}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(24,15,29,.62)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '22px', zIndex: 9999, backdropFilter: 'blur(7px)' }}
+          >
+            <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: '470px', background: '#fff', borderRadius: '22px', boxShadow: '0 28px 80px rgba(0,0,0,.25)', padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '18px' }}>
+                <div>
+                  <span style={{ display: 'block', fontSize: '9px', fontWeight: 850, letterSpacing: '1px', color: '#8d7498', marginBottom: '5px' }}>RECUPERAÇÃO DE ACESSO</span>
+                  <strong style={{ fontSize: '20px', color: '#392b3f' }}>Redefinir senha</strong>
+                </div>
+                <button type="button" onClick={fecharRecuperacaoSenha} style={{ width: '36px', height: '36px', borderRadius: '50%', border: 'none', background: '#f4eff6', cursor: 'pointer' }}>✕</button>
+              </div>
+
+              {recuperacaoEtapa === 'identificacao' && (
+                <form onSubmit={iniciarRecuperacaoSenha}>
+                  <p style={{ color: '#756c79', fontSize: '12px', lineHeight: 1.6, marginTop: 0 }}>
+                    Informe o e-mail usado para acessar o sistema. Enviaremos um link seguro de recuperação pelo Supabase Auth.
+                  </p>
+                  <div className="form-group" style={{ marginBottom: '16px' }}>
+                    <label>E-mail de acesso</label>
+                    <input
+                      type="email"
+                      value={recuperacaoIdentificador}
+                      onChange={(e) => setRecuperacaoIdentificador(e.target.value)}
+                      placeholder="email@empresa.com"
+                      autoFocus
+                    />
+                  </div>
+                  <button className="primary-button" style={{ width: '100%' }}>
+                    Enviar link de recuperação
+                  </button>
+                </form>
+              )}
+
+              {recuperacaoEtapa === 'novaSenha' && (
+                <form onSubmit={concluirRecuperacaoSenha}>
+                  <p style={{ color: '#756c79', fontSize: '12px', lineHeight: 1.6 }}>
+                    Link validado. Crie uma nova senha segura para concluir a recuperação.
+                  </p>
+                  <div className="form-group" style={{ marginBottom: '11px' }}>
+                    <label>Nova senha</label>
+                    <input
+                      type="password"
+                      value={recuperacaoNovaSenha}
+                      onChange={(e) => setRecuperacaoNovaSenha(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: '9px' }}>
+                    <label>Confirmar nova senha</label>
+                    <input
+                      type="password"
+                      value={recuperacaoConfirmarSenha}
+                      onChange={(e) => setRecuperacaoConfirmarSenha(e.target.value)}
+                    />
+                  </div>
+                  <small style={{ display: 'block', color: '#877c8b', lineHeight: 1.5, marginBottom: '16px' }}>
+                    {mensagemRegraSenha()}
+                  </small>
+                  <button className="primary-button" style={{ width: '100%' }}>
+                    Salvar nova senha
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -5031,7 +7358,7 @@ function App() {
                 <strong>Escaneie para pagamento</strong>
 
                 <small>
-                  QR demonstrativo para apresentação do protótipo.
+                  QR demonstrativo. O sistema ainda não executa a transferência PIX automaticamente.
                 </small>
               </div>
             </div>
@@ -5060,7 +7387,7 @@ function App() {
                   className="payment-confirm-button"
                   onClick={marcarPagamentoSelecionadoComoPago}
                 >
-                  ✓ Confirmar pagamento
+                  ✓ Confirmar pagamento manual
                 </button>
               )}
             </div>
@@ -5129,6 +7456,27 @@ function App() {
           >
             {usuarioLogado?.perfil || 'Sem perfil'}
           </span>
+          <span
+            style={{
+              display: 'block',
+              marginTop: '6px',
+              fontSize: '7px',
+              color: 'rgba(255,255,255,.55)',
+            }}
+          >
+            @{usuarioLogado?.usuario || 'usuario'} · conta ativa
+          </span>
+          <button
+            type="button"
+            onClick={() => setMostrarAlterarMinhaSenha(true)}
+            style={{
+              marginTop: '9px', width: '100%', border: '1px solid rgba(255,255,255,.16)',
+              background: 'rgba(255,255,255,.08)', color: '#fff', borderRadius: '8px',
+              padding: '7px 8px', cursor: 'pointer', fontSize: '8px', fontWeight: 750,
+            }}
+          >
+            Alterar minha senha
+          </button>
         </div>
 
         <div className="menu-group-title">GESTÃO</div>
@@ -5371,7 +7719,7 @@ function App() {
               cursor: 'pointer',
             }}
           >
-            Sair da Área Administrativa
+            Sair da conta
           </button>
         </div>
       </aside>
@@ -7715,7 +10063,7 @@ function App() {
                       onChange={(e) =>
                         setNovoFuncionario({
                           ...novoFuncionario,
-                          cpf: e.target.value,
+                          cpf: formatarCpf(e.target.value),
                         })
                       }
                     />
@@ -7742,7 +10090,7 @@ function App() {
                       onChange={(e) =>
                         setNovoFuncionario({
                           ...novoFuncionario,
-                          telefone: e.target.value,
+                          telefone: formatarTelefone(e.target.value),
                         })
                       }
                     />
@@ -8028,7 +10376,10 @@ function App() {
                       </span>
 
                       <button
-                        onClick={() => setFuncionarioSelecionado(null)}
+                        onClick={() => {
+                          setFuncionarioSelecionado(null)
+                          cancelarEdicaoFuncionario()
+                        }}
                         style={{
                           width: '38px',
                           height: '38px',
@@ -8126,30 +10477,344 @@ function App() {
                         </div>
                       </div>
 
-                      <span
+                      <div
                         style={{
-                          padding: '8px 12px',
-                          borderRadius: '999px',
-                          background:
-                            funcionarioSelecionado.status === 'Ativo'
-                              ? 'rgba(57,210,124,.16)'
-                              : 'rgba(255,100,100,.16)',
-                          border:
-                            funcionarioSelecionado.status === 'Ativo'
-                              ? '1px solid rgba(100,235,160,.25)'
-                              : '1px solid rgba(255,160,160,.25)',
-                          color:
-                            funcionarioSelecionado.status === 'Ativo'
-                              ? '#c5f7d8'
-                              : '#ffd0d0',
-                          fontSize: '11px',
-                          fontWeight: 800,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-end',
+                          gap: '10px',
                         }}
                       >
-                        ● {funcionarioSelecionado.status}
-                      </span>
+                        <span
+                          style={{
+                            padding: '8px 12px',
+                            borderRadius: '999px',
+                            background:
+                              funcionarioSelecionado.status === 'Ativo'
+                                ? 'rgba(57,210,124,.16)'
+                                : 'rgba(255,100,100,.16)',
+                            border:
+                              funcionarioSelecionado.status === 'Ativo'
+                                ? '1px solid rgba(100,235,160,.25)'
+                                : '1px solid rgba(255,160,160,.25)',
+                            color:
+                              funcionarioSelecionado.status === 'Ativo'
+                                ? '#c5f7d8'
+                                : '#ffd0d0',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          ● {funcionarioSelecionado.status}
+                        </span>
+
+                        {usuarioLogado?.perfil === 'Administrador' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                iniciarEdicaoFuncionario(funcionarioSelecionado)
+                              }
+                              style={{
+                                padding: '9px 13px',
+                                borderRadius: '10px',
+                                border: '1px solid rgba(255,255,255,.30)',
+                                background: 'rgba(255,255,255,.14)',
+                                color: '#ffffff',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              ✎ Editar informações
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                alternarStatusFuncionario(funcionarioSelecionado)
+                              }
+                              style={{
+                                padding: '9px 13px',
+                                borderRadius: '10px',
+                                border:
+                                  funcionarioSelecionado.status === 'Ativo'
+                                    ? '1px solid rgba(255,170,170,.35)'
+                                    : '1px solid rgba(150,240,185,.35)',
+                                background:
+                                  funcionarioSelecionado.status === 'Ativo'
+                                    ? 'rgba(170,35,55,.28)'
+                                    : 'rgba(35,155,85,.28)',
+                                color: '#ffffff',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {funcionarioSelecionado.status === 'Ativo'
+                                ? 'Desativar funcionário'
+                                : 'Reativar funcionário'}
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
+
+                  {editandoFuncionario && funcionarioEmEdicao && (
+                    <div
+                      style={{
+                        margin: '20px 22px 0',
+                        padding: '22px',
+                        background: '#ffffff',
+                        border: '1px solid #dfd5e4',
+                        borderRadius: '18px',
+                        boxShadow: '0 10px 28px rgba(55, 28, 70, 0.08)',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          gap: '14px',
+                          flexWrap: 'wrap',
+                          marginBottom: '18px',
+                        }}
+                      >
+                        <div>
+                          <span style={estiloLabel}>EDIÇÃO DO CADASTRO</span>
+                          <h3 style={{ margin: '5px 0 4px', color: '#35283d' }}>
+                            Alterar informações do funcionário
+                          </h3>
+                          <p
+                            style={{
+                              margin: 0,
+                              color: '#817786',
+                              fontSize: '12px',
+                            }}
+                          >
+                            As alterações serão salvas no cadastro e registradas na auditoria.
+                          </p>
+                        </div>
+
+                        <span
+                          style={{
+                            padding: '7px 10px',
+                            borderRadius: '999px',
+                            background: '#f5eff9',
+                            color: '#4b1f6f',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          Acesso: Administrador
+                        </span>
+                      </div>
+
+                      <h4 className="form-section-title">Dados pessoais</h4>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Nome completo</label>
+                          <input
+                            value={funcionarioEmEdicao.nome}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                nome: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>CPF</label>
+                          <input
+                            value={funcionarioEmEdicao.cpf}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                cpf: formatarCpf(e.target.value),
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Data de nascimento</label>
+                          <input
+                            type="date"
+                            value={funcionarioEmEdicao.nascimento}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                nascimento: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Telefone</label>
+                          <input
+                            value={funcionarioEmEdicao.telefone}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                telefone: formatarTelefone(e.target.value),
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>E-mail</label>
+                          <input
+                            type="email"
+                            value={funcionarioEmEdicao.email}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                email: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Endereço</label>
+                          <input
+                            value={funcionarioEmEdicao.endereco}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                endereco: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <h4 className="form-section-title">Dados profissionais</h4>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Data de admissão</label>
+                          <input
+                            type="date"
+                            value={funcionarioEmEdicao.admissao}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                admissao: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Função</label>
+                          <input
+                            value={funcionarioEmEdicao.funcao}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                funcao: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Diária-base</label>
+                          <input value={funcionarioEmEdicao.diaria} disabled />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Reconhecimento facial</label>
+                          <select
+                            value={funcionarioEmEdicao.facial}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                facial: e.target.value as
+                                  | 'Cadastrado'
+                                  | 'Pendente',
+                              })
+                            }
+                          >
+                            <option value="Cadastrado">Cadastrado</option>
+                            <option value="Pendente">Pendente</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <h4 className="form-section-title">Dados PIX</h4>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Tipo da chave</label>
+                          <select
+                            value={funcionarioEmEdicao.tipoPix}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                tipoPix: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Selecione</option>
+                            <option value="CPF">CPF</option>
+                            <option value="Celular">Celular</option>
+                            <option value="E-mail">E-mail</option>
+                            <option value="Aleatória">Chave aleatória</option>
+                          </select>
+                        </div>
+
+                        <div className="form-group">
+                          <label>Chave PIX</label>
+                          <input
+                            value={funcionarioEmEdicao.chavePix}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                chavePix: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Titular</label>
+                          <input
+                            value={funcionarioEmEdicao.titularPix}
+                            onChange={(e) =>
+                              setFuncionarioEmEdicao({
+                                ...funcionarioEmEdicao,
+                                titularPix: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="form-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={cancelarEdicaoFuncionario}
+                        >
+                          Cancelar edição
+                        </button>
+
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={salvarEdicaoFuncionario}
+                        >
+                          Salvar alterações
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div
                     style={{
@@ -8808,7 +11473,7 @@ function App() {
                                       <td>
                                         <span
                                           className={
-                                            documento.status === 'Enviado'
+                                            documento.status === 'Ativo'
                                               ? 'employee-status active-status'
                                               : 'employee-status pending-status'
                                           }
@@ -9391,7 +12056,7 @@ function App() {
                             <th>Funcionário</th>
                             <th>Função</th>
                             <th>Data</th>
-                            <th>Entrada</th>
+                            <th>Horário</th>
                             <th>Método</th>
                             <th>Status</th>
                             <th>Ações</th>
@@ -9466,8 +12131,10 @@ function App() {
                                               : '#6b3c83',
                                         }}
                                       />
-                                      {registro.metodo ||
-                                        'Reconhecimento facial'}
+                                      {registro.metodo || 'Sistema'}
+                                      {registro.tipoRegistro
+                                        ? ` • ${registro.tipoRegistro}`
+                                        : ''}
                                     </span>
                                   ) : (
                                     <span
@@ -9499,7 +12166,7 @@ function App() {
                                         registrarPontoManual(indexOriginal)
                                       }
                                     >
-                                      Registrar
+                                      Registrar {registro.tipoRegistro || 'Entrada'}
                                     </button>
                                   ) : (
                                     <button
@@ -9663,6 +12330,10 @@ function App() {
                             {[
                               ['Data', registroPontoSelecionado.data],
                               ['Horário', registroPontoSelecionado.horario],
+                              [
+                                'Tipo de registro',
+                                registroPontoSelecionado.tipoRegistro || 'Entrada',
+                              ],
                               [
                                 'Método',
                                 registroPontoSelecionado.metodo ||
@@ -11398,20 +14069,28 @@ function App() {
                                     </span>
                                   </td>
                                   <td>
-                                    {diaria.status === 'Pendente' ? (
-                                      <button
-                                        className="action-button"
-                                        onClick={() =>
-                                          aprovarDiaria(indexOriginal)
-                                        }
-                                      >
-                                        Aprovar
-                                      </button>
-                                    ) : (
-                                      <span className="registered-text">
-                                        Aprovada
-                                      </span>
-                                    )}
+                                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                      {diaria.status === 'Pendente' ? (
+                                        <button
+                                          className="action-button"
+                                          onClick={() => aprovarDiaria(indexOriginal)}
+                                          disabled={!podeEditar}
+                                        >
+                                          Aprovar
+                                        </button>
+                                      ) : (
+                                        <span className="registered-text">Aprovada</span>
+                                      )}
+                                      {podeAdministrar && (
+                                        <button
+                                          className="action-button"
+                                          onClick={() => abrirEdicaoDiaria(indexOriginal)}
+                                          style={{ background: '#fff', border: '1px solid #ddd3e3' }}
+                                        >
+                                          Editar
+                                        </button>
+                                      )}
+                                    </div>
                                   </td>
                                 </tr>
                               )
@@ -11594,11 +14273,11 @@ function App() {
                         }
                       >
                         <option value="Todos">Todos</option>
-                        <option value="Aberto">Aberto</option>
-                        <option value="Em revisão">Em revisão</option>
+                        <option value="Em conferência">Em conferência</option>
+                        <option value="Reaberto">Reaberto</option>
                         <option value="Aprovado">Aprovado</option>
-                        <option value="Aguardando pagamento">
-                          Aguardando pagamento
+                        <option value="Enviado para pagamento">
+                          Enviado para pagamento
                         </option>
                         <option value="Pago">Pago</option>
                       </select>
@@ -12154,8 +14833,8 @@ function App() {
                               Exportar Excel
                             </button>
 
-                            {(selecionado.status === 'Aberto' ||
-                              selecionado.status === 'Em revisão') && (
+                            {(selecionado.status === 'Em conferência' ||
+                              selecionado.status === 'Reaberto') && (
                               <button
                                 className="primary-button"
                                 disabled={criticos > 0}
@@ -12185,7 +14864,7 @@ function App() {
                             )}
 
                             {selecionado.status ===
-                              'Aguardando pagamento' && (
+                              'Enviado para pagamento' && (
                               <button
                                 className="primary-button"
                                 onClick={() => setTela('pagamentos')}
@@ -12520,13 +15199,13 @@ function App() {
               </div>
 
               <div className="card">
-                <span>Enviados</span>
-                <strong>{documentosEnviados}</strong>
+                <span>Ativos</span>
+                <strong>{documentosAtivos}</strong>
               </div>
 
               <div className="card">
-                <span>Pendentes</span>
-                <strong>{documentosPendentes}</strong>
+                <span>Arquivados</span>
+                <strong>{documentosArquivados}</strong>
               </div>
             </div>
 
@@ -12581,8 +15260,9 @@ function App() {
                     onChange={(e) => setStatusDocumentoFiltro(e.target.value)}
                   >
                     <option value="Todos">Todos</option>
-                    <option value="Enviado">Enviado</option>
-                    <option value="Pendente">Pendente</option>
+                    <option value="Ativo">Ativo</option>
+                    <option value="Expirado">Expirado</option>
+                    <option value="Arquivado">Arquivado</option>
                   </select>
                 </div>
               </div>
@@ -12620,11 +15300,16 @@ function App() {
                     >
                       <option value="">Selecione</option>
 
-                      {funcionarios.map((funcionario, index) => (
-                        <option key={index} value={funcionario.nome}>
-                          {funcionario.nome}
-                        </option>
-                      ))}
+                      {funcionarios
+                        .filter((funcionario) => funcionario.status === 'Ativo')
+                        .map((funcionario) => (
+                          <option
+                            key={funcionario.id || funcionario.nome}
+                            value={funcionario.nome}
+                          >
+                            {funcionario.nome}
+                          </option>
+                        ))}
                     </select>
                   </div>
 
@@ -12642,25 +15327,62 @@ function App() {
                     >
                       <option value="">Selecione</option>
                       <option value="Contrato">Contrato</option>
-                      <option value="RG">RG</option>
+                      <option value="RG/CNH">RG / CNH</option>
                       <option value="CPF">CPF</option>
-                      <option value="Comprovante">Comprovante</option>
+                      <option value="Comprovante de endereço">
+                        Comprovante de endereço
+                      </option>
+                      <option value="Atestado">Atestado</option>
                       <option value="Outro">Outro</option>
                     </select>
                   </div>
 
                   <div className="form-group">
-                    <label>Arquivo</label>
-
+                    <label>Título</label>
                     <input
-                      type="file"
+                      placeholder="Ex.: Contrato assinado 2026"
+                      value={novoDocumento.titulo}
                       onChange={(e) =>
                         setNovoDocumento({
                           ...novoDocumento,
-                          nomeArquivo: e.target.files?.[0]?.name || '',
+                          titulo: e.target.value,
                         })
                       }
                     />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Validade (opcional)</label>
+                    <input
+                      type="date"
+                      value={novoDocumento.validade}
+                      onChange={(e) =>
+                        setNovoDocumento({
+                          ...novoDocumento,
+                          validade: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Arquivo (máx. 10 MB)</label>
+
+                    <input
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx"
+                      onChange={(e) => {
+                        const arquivo = e.target.files?.[0] || null
+                        setNovoDocumento({
+                          ...novoDocumento,
+                          nomeArquivo: arquivo?.name || '',
+                          arquivo,
+                        })
+                      }}
+                    />
+                    {novoDocumento.nomeArquivo && (
+                      <small>{novoDocumento.nomeArquivo}</small>
+                    )}
                   </div>
                 </div>
 
@@ -12675,8 +15397,9 @@ function App() {
                   <button
                     className="primary-button"
                     onClick={salvarDocumento}
+                    disabled={enviandoDocumento}
                   >
-                    Salvar Documento
+                    {enviandoDocumento ? 'Enviando...' : 'Salvar Documento'}
                   </button>
                 </div>
               </div>
@@ -12690,16 +15413,23 @@ function App() {
                       <th>Documento</th>
                       <th>Funcionário</th>
                       <th>Tipo</th>
-                      <th>Data</th>
+                      <th>Envio</th>
+                      <th>Validade</th>
                       <th>Status</th>
+                      <th>Ações</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {documentosFiltrados.map((documento, index) => (
-                      <tr key={index}>
+                      <tr key={documento.id || index}>
                         <td>
-                          <strong>{documento.nome}</strong>
+                          <strong>{documento.titulo || documento.nome}</strong>
+                          {documento.titulo !== documento.nome && (
+                            <div className="table-secondary-text">
+                              {documento.nome}
+                            </div>
+                          )}
                         </td>
 
                         <td>{documento.funcionario}</td>
@@ -12708,16 +15438,38 @@ function App() {
 
                         <td>{documento.dataEnvio}</td>
 
+                        <td>{documento.validade || '-'}</td>
+
                         <td>
                           <span
                             className={
-                              documento.status === 'Enviado'
+                              documento.status === 'Ativo'
                                 ? 'employee-status active-status'
                                 : 'employee-status pending-status'
                             }
                           >
                             {documento.status}
                           </span>
+                        </td>
+
+                        <td>
+                          <div className="table-actions">
+                            <button
+                              className="action-button"
+                              onClick={() => void abrirDocumento(documento)}
+                            >
+                              Abrir
+                            </button>
+
+                            {documento.status !== 'Arquivado' && (
+                              <button
+                                className="action-button"
+                                onClick={() => void arquivarDocumento(documento)}
+                              >
+                                Arquivar
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -13075,7 +15827,7 @@ function App() {
                             <option value="Nacional">Nacional</option>
                             <option value="Estadual">Estadual</option>
                             <option value="Municipal">Municipal</option>
-                            <option value="Empresa">Empresa</option>
+                            <option value="Interno">Interno</option>
                           </select>
                         </div>
 
@@ -13723,7 +16475,7 @@ function App() {
                       {
                         titulo: 'Eventos registrados',
                         valor: registrosAuditoria.length,
-                        detalhe: 'histórico local',
+                        detalhe: 'Supabase protegido',
                         fundo: '#f1eaf5',
                         cor: '#65387a',
                       },
@@ -13940,7 +16692,7 @@ function App() {
                           fontSize: '8px',
                         }}
                       >
-                        Máximo local: 300 eventos
+                        Últimos 500 eventos do Supabase
                       </span>
                     </div>
 
@@ -14109,9 +16861,9 @@ function App() {
                       lineHeight: 1.55,
                     }}
                   >
-                    ⛨ A auditoria desta versão é demonstrativa e fica salva
-                    localmente. Em produção, esses eventos devem ser gravados no
-                    servidor e protegidos contra alteração pelo usuário.
+                    ⛨ Auditoria real conectada ao Supabase. Os eventos são gravados
+                    no servidor pela função segura write_audit e o histórico é somente
+                    leitura no painel administrativo.
                   </div>
                 </>
               )
@@ -14135,13 +16887,17 @@ function App() {
                 <span className="section-label">SEGURANÇA E ACESSO</span>
                 <h1 className="page-title">Usuários do Sistema</h1>
                 <p className="page-subtitle">
-                  Controle quem entra no sistema e quais áreas cada perfil pode acessar.
+                  Controle quem entra no sistema, dados de recuperação, níveis de acesso e segurança das contas.
                 </p>
               </div>
 
               <button
                 className="primary-button"
-                onClick={() => setMostrarNovoUsuario((atual) => !atual)}
+                onClick={() => {
+                  const proximo = !mostrarNovoUsuario
+                  setMostrarNovoUsuario(proximo)
+                  if (proximo) cancelarEdicaoUsuario()
+                }}
               >
                 {mostrarNovoUsuario ? 'Cancelar' : '+ Novo usuário'}
               </button>
@@ -14247,9 +17003,10 @@ function App() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: mostrarNovoUsuario
-                  ? 'minmax(0, 1.3fr) minmax(300px, .7fr)'
-                  : '1fr',
+                gridTemplateColumns:
+                  mostrarNovoUsuario || usuarioEditandoId !== null
+                    ? 'minmax(0, 1.3fr) minmax(320px, .7fr)'
+                    : '1fr',
                 gap: '16px',
                 alignItems: 'start',
               }}
@@ -14280,7 +17037,7 @@ function App() {
                     Acessos cadastrados
                   </strong>
                   <span style={{ color: '#9b929e', fontSize: '9px' }}>
-                    Login demonstrativo do protótipo
+                    Usuários reais • Supabase Auth + profiles
                   </span>
                 </div>
 
@@ -14289,7 +17046,8 @@ function App() {
                     <thead>
                       <tr>
                         <th>Usuário</th>
-                        <th>Login</th>
+                        <th>E-mail de acesso</th>
+                        <th>Contato</th>
                         <th>Perfil</th>
                         <th>Status</th>
                         <th>Último acesso</th>
@@ -14316,6 +17074,11 @@ function App() {
                             )}
                           </td>
                           <td>{item.usuario}</td>
+                          <td>
+                            <span style={{ color: '#5f5662', fontSize: '9px' }}>
+                              {item.celular || 'Sem celular'}
+                            </span>
+                          </td>
                           <td>
                             <span
                               style={{
@@ -14354,12 +17117,20 @@ function App() {
                           </td>
                           <td>{item.ultimoAcesso}</td>
                           <td>
-                            <button
-                              className="table-action-button"
-                              onClick={() => alternarStatusUsuario(item.id)}
-                            >
-                              {item.status === 'Ativo' ? 'Desativar' : 'Reativar'}
-                            </button>
+                            <div className="table-actions">
+                              <button
+                                className="table-action-button"
+                                onClick={() => iniciarEdicaoUsuario(item)}
+                              >
+                                Editar
+                              </button>
+                              <button
+                                className="table-action-button"
+                                onClick={() => alternarStatusUsuario(item.id)}
+                              >
+                                {item.status === 'Ativo' ? 'Desativar' : 'Reativar'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -14401,12 +17172,13 @@ function App() {
                   </div>
 
                   <div className="form-group" style={{ marginBottom: '11px' }}>
-                    <label>Nome de usuário</label>
-                    <input
-                      value={novoUsuarioLogin}
-                      onChange={(e) => setNovoUsuarioLogin(e.target.value)}
-                      placeholder="Ex.: jose.silva"
-                    />
+                    <label>E-mail</label>
+                    <input type="email" value={novoUsuarioEmail} onChange={(e) => setNovoUsuarioEmail(e.target.value)} placeholder="nome@empresa.com" />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '11px' }}>
+                    <label>Celular</label>
+                    <input value={novoUsuarioCelular} onChange={(e) => setNovoUsuarioCelular(e.target.value)} placeholder="(19) 99999-9999" />
                   </div>
 
                   <div className="form-group" style={{ marginBottom: '11px' }}>
@@ -14419,7 +17191,21 @@ function App() {
                     />
                   </div>
 
-                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                  <div className="form-group" style={{ marginBottom: '11px' }}>
+                    <label>Confirmar senha</label>
+                    <input
+                      type="password"
+                      value={novoUsuarioConfirmarSenha}
+                      onChange={(e) => setNovoUsuarioConfirmarSenha(e.target.value)}
+                      placeholder="Digite a senha novamente"
+                    />
+                  </div>
+
+                  <div style={{ margin: '-3px 0 12px', color: '#8e8491', fontSize: '9px', lineHeight: 1.5 }}>
+                    {mensagemRegraSenha()}
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '11px' }}>
                     <label>Perfil de acesso</label>
                     <select
                       value={novoUsuarioPerfil}
@@ -14433,11 +17219,182 @@ function App() {
                     </select>
                   </div>
 
+                  <div className="form-group" style={{ marginBottom: '14px' }}>
+                    <label>Status inicial</label>
+                    <select
+                      value={novoUsuarioStatus}
+                      onChange={(e) =>
+                        setNovoUsuarioStatus(
+                          e.target.value as UsuarioSistema['status']
+                        )
+                      }
+                    >
+                      <option value="Ativo">Ativo</option>
+                      <option value="Inativo">Inativo</option>
+                    </select>
+                  </div>
+
                   <button className="primary-button" style={{ width: '100%' }}>
-                    Salvar usuário
+                    Criar usuário
                   </button>
                 </form>
               )}
+
+              {usuarioEditandoId !== null && (() => {
+                const usuarioOriginal = usuariosSistema.find(
+                  (item) => item.id === usuarioEditandoId
+                )
+
+                if (!usuarioOriginal) return null
+
+                return (
+                  <form
+                    onSubmit={salvarEdicaoUsuario}
+                    style={{
+                      background: '#ffffff',
+                      border: '1px solid #e9e3eb',
+                      borderRadius: '19px',
+                      padding: '18px',
+                      boxShadow: '0 9px 26px rgba(60,36,72,.05)',
+                    }}
+                  >
+                    <span className="section-label">EDITAR ACESSO</span>
+                    <strong
+                      style={{
+                        display: 'block',
+                        color: '#3d3142',
+                        fontSize: '14px',
+                        marginBottom: '5px',
+                      }}
+                    >
+                      {usuarioOriginal.nome}
+                    </strong>
+                    <span
+                      style={{
+                        display: 'block',
+                        color: '#8f8592',
+                        fontSize: '10px',
+                        lineHeight: 1.5,
+                        marginBottom: '16px',
+                      }}
+                    >
+                      Altere os dados do acesso. As mudanças são gravadas no Supabase Auth e no perfil real.
+                    </span>
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>Nome completo</label>
+                      <input
+                        value={usuarioEditandoNome}
+                        onChange={(e) => setUsuarioEditandoNome(e.target.value)}
+                      />
+                    </div>
+
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>E-mail</label>
+                      <input type="email" value={usuarioEditandoEmail} onChange={(e) => setUsuarioEditandoEmail(e.target.value)} />
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>Celular</label>
+                      <input value={usuarioEditandoCelular} onChange={(e) => setUsuarioEditandoCelular(e.target.value)} />
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>Perfil de acesso</label>
+                      <select
+                        value={usuarioEditandoPerfil}
+                        onChange={(e) =>
+                          setUsuarioEditandoPerfil(e.target.value as PerfilAcesso)
+                        }
+                      >
+                        <option value="Administrador">Administrador</option>
+                        <option value="Supervisor">Supervisor</option>
+                        <option value="Consulta">Consulta</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>Status</label>
+                      <select
+                        value={usuarioEditandoStatus}
+                        onChange={(e) =>
+                          setUsuarioEditandoStatus(
+                            e.target.value as UsuarioSistema['status']
+                          )
+                        }
+                        disabled={usuarioLogado?.id === usuarioOriginal.id}
+                      >
+                        <option value="Ativo">Ativo</option>
+                        <option value="Inativo">Inativo</option>
+                      </select>
+                    </div>
+
+                    <div
+                      style={{
+                        margin: '15px 0 12px',
+                        paddingTop: '13px',
+                        borderTop: '1px solid #eee9f0',
+                      }}
+                    >
+                      <strong
+                        style={{
+                          display: 'block',
+                          color: '#514456',
+                          fontSize: '11px',
+                          marginBottom: '3px',
+                        }}
+                      >
+                        Redefinir senha
+                      </strong>
+                      <span style={{ color: '#9b929e', fontSize: '9px' }}>
+                        Deixe os dois campos vazios para manter a senha atual.
+                      </span>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '11px' }}>
+                      <label>Nova senha</label>
+                      <input
+                        type="password"
+                        value={usuarioEditandoNovaSenha}
+                        onChange={(e) => setUsuarioEditandoNovaSenha(e.target.value)}
+                        placeholder="Nova senha"
+                      />
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: '14px' }}>
+                      <label>Confirmar nova senha</label>
+                      <input
+                        type="password"
+                        value={usuarioEditandoConfirmarSenha}
+                        onChange={(e) =>
+                          setUsuarioEditandoConfirmarSenha(e.target.value)
+                        }
+                        placeholder="Digite a nova senha novamente"
+                      />
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '9px',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={cancelarEdicaoUsuario}
+                      >
+                        Cancelar
+                      </button>
+                      <button type="submit" className="primary-button">
+                        Salvar alterações
+                      </button>
+                    </div>
+                  </form>
+                )
+              })()}
             </div>
 
             <div
@@ -14509,8 +17466,7 @@ function App() {
                 lineHeight: 1.5,
               }}
             >
-              ⚠ As senhas desta versão são demonstrativas e ficam no navegador.
-              Em produção, autenticação e permissões devem ser controladas no servidor.
+              ✓ Criação de usuários protegida por Edge Function. Credenciais administrativas permanecem somente no backend.
             </div>
           </>
         )}
@@ -14525,7 +17481,7 @@ function App() {
                 <h1 className="page-title">Configurações das Diárias</h1>
                 <p className="page-subtitle">
                   O administrador pode definir a diária-base, percentuais de
-                  sábado, domingo e feriado, além de VT e VR.
+                  sábado, domingo e feriado, VT, VR e a jornada padrão da operação.
                 </p>
               </div>
             </div>
@@ -14548,7 +17504,8 @@ function App() {
               feriado em dia útil acrescenta{' '}
               {configuracaoTemporaria.percentualFeriado}%. Se um feriado cair
               no sábado ou domingo, vale apenas a regra do fim de semana — o
-              feriado não gera um segundo adicional.
+              feriado não gera um segundo adicional. A jornada padrão configurada é{' '}
+              <strong>{configuracaoTemporaria.horarioEntradaPadrao}–{configuracaoTemporaria.horarioSaidaPadrao}</strong>.
             </div>
 
             <div className="panel">
@@ -14687,6 +17644,36 @@ function App() {
                       setConfiguracaoTemporaria({
                         ...configuracaoTemporaria,
                         vr: Number(e.target.value),
+                      })
+                    }
+                    disabled={!podeAdministrar}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Entrada padrão</label>
+                  <input
+                    type="time"
+                    value={configuracaoTemporaria.horarioEntradaPadrao}
+                    onChange={(e) =>
+                      setConfiguracaoTemporaria({
+                        ...configuracaoTemporaria,
+                        horarioEntradaPadrao: e.target.value,
+                      })
+                    }
+                    disabled={!podeAdministrar}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Saída padrão</label>
+                  <input
+                    type="time"
+                    value={configuracaoTemporaria.horarioSaidaPadrao}
+                    onChange={(e) =>
+                      setConfiguracaoTemporaria({
+                        ...configuracaoTemporaria,
+                        horarioSaidaPadrao: e.target.value,
                       })
                     }
                     disabled={!podeAdministrar}
@@ -14950,27 +17937,180 @@ function App() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={limparDadosLocais}
-                  style={{
-                    minHeight: '36px',
-                    padding: '0 12px',
-                    borderRadius: '10px',
-                    border: '1px solid #efd6d2',
-                    background: '#fff8f7',
-                    color: '#a64d41',
-                    fontSize: '8px',
-                    fontWeight: 850,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Restaurar dados de demonstração
-                </button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <input
+                    ref={inputBackupRef}
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={importarBackupCompleto}
+                    style={{ display: 'none' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={exportarBackupCompleto}
+                    disabled={!podeAdministrar}
+                    className="secondary-button"
+                    style={{ minHeight: '36px' }}
+                  >
+                    ⇩ Exportar backup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={solicitarRestauracaoBackup}
+                    disabled={!podeAdministrar}
+                    className="secondary-button"
+                    style={{ minHeight: '36px' }}
+                  >
+                    ⇧ Restaurar backup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={limparDadosLocais}
+                    disabled={!podeAdministrar}
+                    style={{
+                      minHeight: '36px',
+                      padding: '0 12px',
+                      borderRadius: '10px',
+                      border: '1px solid #efd6d2',
+                      background: '#fff8f7',
+                      color: '#a64d41',
+                      fontSize: '8px',
+                      fontWeight: 850,
+                      cursor: podeAdministrar ? 'pointer' : 'not-allowed',
+                      opacity: podeAdministrar ? 1 : 0.55,
+                    }}
+                  >
+                    Limpar dados locais legados
+                  </button>
+                </div>
               </div>
             </div>
           </>
         )}
+
+      {mostrarAlterarMinhaSenha && usuarioLogado && (
+        <div className="pix-modal-backdrop" onClick={() => setMostrarAlterarMinhaSenha(false)}>
+          <div className="pix-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '520px' }}>
+            <div className="pix-modal-header">
+              <div>
+                <span className="section-label">SEGURANÇA DA CONTA</span>
+                <h2>Alterar minha senha</h2>
+                <p className="page-subtitle" style={{ marginTop: '4px' }}>{usuarioLogado.nome} • @{usuarioLogado.usuario}</p>
+              </div>
+              <button className="pix-modal-close" onClick={() => setMostrarAlterarMinhaSenha(false)}>✕</button>
+            </div>
+            <form onSubmit={alterarMinhaSenha} style={{ paddingTop: '10px' }}>
+              <div className="form-group" style={{ marginBottom: '12px' }}>
+                <label>Senha atual</label>
+                <input type="password" value={minhaSenhaAtual} onChange={(e) => setMinhaSenhaAtual(e.target.value)} autoComplete="current-password" />
+              </div>
+              <div className="form-group" style={{ marginBottom: '12px' }}>
+                <label>Nova senha</label>
+                <input type="password" value={minhaNovaSenha} onChange={(e) => setMinhaNovaSenha(e.target.value)} autoComplete="new-password" />
+              </div>
+              <div className="form-group" style={{ marginBottom: '8px' }}>
+                <label>Confirmar nova senha</label>
+                <input type="password" value={minhaConfirmarSenha} onChange={(e) => setMinhaConfirmarSenha(e.target.value)} autoComplete="new-password" />
+              </div>
+              <div style={{ padding: '10px 12px', borderRadius: '11px', background: '#f8f4fa', border: '1px solid #eadfee', color: '#746679', fontSize: '9px', lineHeight: 1.5, marginBottom: '15px' }}>{mensagemRegraSenha()}</div>
+              <div className="pix-modal-actions">
+                <button type="button" className="secondary-button" onClick={() => setMostrarAlterarMinhaSenha(false)}>Cancelar</button>
+                <button className="primary-button">Alterar senha</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {diariaEditando && (
+        <div className="pix-modal-backdrop" onClick={() => setDiariaEditando(null)}>
+          <div className="pix-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '620px' }}>
+            <div className="pix-modal-header">
+              <div>
+                <span className="section-label">AJUSTE ADMINISTRATIVO</span>
+                <h2>Editar diária</h2>
+                <p className="page-subtitle" style={{ marginTop: '4px' }}>
+                  {diariaEditando.diaria.nome} • {diariaEditando.diaria.data}
+                </p>
+              </div>
+              <button className="pix-modal-close" onClick={() => setDiariaEditando(null)}>✕</button>
+            </div>
+
+            <div className="form-grid" style={{ marginTop: '16px' }}>
+              <div className="form-group">
+                <label>Diária base (R$)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={diariaEditando.diaria.diariaBase}
+                  onChange={(e) => alterarCampoDiaria('diariaBase', Number(e.target.value))}
+                />
+              </div>
+              <div className="form-group">
+                <label>Adicional (R$)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={diariaEditando.diaria.adicional}
+                  onChange={(e) => alterarCampoDiaria('adicional', Number(e.target.value))}
+                />
+              </div>
+              <div className="form-group">
+                <label>Vale-transporte (R$)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={diariaEditando.diaria.vt}
+                  onChange={(e) => alterarCampoDiaria('vt', Number(e.target.value))}
+                />
+              </div>
+              <div className="form-group">
+                <label>Vale-refeição (R$)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={diariaEditando.diaria.vr}
+                  onChange={(e) => alterarCampoDiaria('vr', Number(e.target.value))}
+                />
+              </div>
+              <div className="form-group">
+                <label>Status</label>
+                <select
+                  value={diariaEditando.diaria.status}
+                  onChange={(e) => alterarCampoDiaria('status', e.target.value as Diaria['status'])}
+                >
+                  <option value="Pendente">Em conferência</option>
+                  <option value="Aprovada">Aprovada</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Total recalculado</label>
+                <div style={{ minHeight: '42px', display: 'flex', alignItems: 'center', padding: '0 12px', border: '1px solid #e7e0ea', borderRadius: '10px', background: '#f8f5fa', fontWeight: 850, color: '#52296c' }}>
+                  {moeda(
+                    Number(diariaEditando.diaria.diariaBase || 0) +
+                    Number(diariaEditando.diaria.adicional || 0) +
+                    Number(diariaEditando.diaria.vt || 0) +
+                    Number(diariaEditando.diaria.vr || 0)
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '14px', padding: '10px 12px', borderRadius: '11px', background: '#fff8e8', border: '1px solid #f0dfb7', color: '#856525', fontSize: '9px', lineHeight: 1.5 }}>
+              Ajustes manuais ficam registrados na Auditoria. O valor total é recalculado automaticamente.
+            </div>
+
+            <div className="pix-modal-actions">
+              <button className="secondary-button" onClick={() => setDiariaEditando(null)}>Cancelar</button>
+              <button className="primary-button" onClick={salvarEdicaoDiaria}>Salvar diária</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       </main>
     </div>
