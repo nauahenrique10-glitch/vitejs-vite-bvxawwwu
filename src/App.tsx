@@ -92,12 +92,13 @@ type RegistroPontoSupabase = {
 }
 
 type ListaDiaristas = {
-  id: number
+  id: string
   data: string
   local: string
   horario: string
   observacao: string
   diaristas: string[]
+  ausentes?: string[]
   criadaEm: string
 }
 
@@ -668,6 +669,14 @@ function App() {
   const [registroPontoSelecionado, setRegistroPontoSelecionado] =
     useState<RegistroPonto | null>(null)
 
+  const [ajustePontoAberto, setAjustePontoAberto] = useState(false)
+  const [ajustePontoFuncionarioId, setAjustePontoFuncionarioId] = useState('')
+  const [ajustePontoData, setAjustePontoData] = useState('')
+  const [ajustePontoHorario, setAjustePontoHorario] = useState('')
+  const [ajustePontoTipo, setAjustePontoTipo] = useState<'Entrada' | 'Saída'>('Entrada')
+  const [ajustePontoMotivo, setAjustePontoMotivo] = useState('')
+  const [ajustePontoSalvando, setAjustePontoSalvando] = useState(false)
+
   const [buscaFuncionario, setBuscaFuncionario] = useState('')
 
   const [buscaPonto, setBuscaPonto] = useState('')
@@ -697,40 +706,7 @@ function App() {
   const [observacaoListaDiaristas, setObservacaoListaDiaristas] = useState('')
   const [buscaListaDiaristas, setBuscaListaDiaristas] = useState('')
   const [diaristasSelecionados, setDiaristasSelecionados] = useState<string[]>([])
-  const [listasDiaristas, setListasDiaristas] = useState<ListaDiaristas[]>([
-    {
-      id: 1,
-      data: dataLocalHoje,
-      local: 'DHL Mogi Mirim',
-      horario: '09:30',
-      observacao: 'Turno operacional das 09:30 às 18:30.',
-      diaristas: [
-        'João da Silva',
-        'Maria Oliveira',
-        'Pedro Almeida',
-        'Lucas Ferreira',
-      ],
-      criadaEm: new Date().toLocaleString('pt-BR'),
-    },
-    {
-      id: 2,
-      data: '2026-08-29',
-      local: 'DHL Mogi Mirim',
-      horario: '09:30',
-      observacao: 'Operação de sábado.',
-      diaristas: ['João da Silva', 'Maria Oliveira'],
-      criadaEm: '28/08/2026 16:40',
-    },
-    {
-      id: 3,
-      data: '2026-08-28',
-      local: 'DHL Mogi Mirim',
-      horario: '09:30',
-      observacao: 'Operação regular.',
-      diaristas: ['Pedro Almeida'],
-      criadaEm: '27/08/2026 17:10',
-    },
-  ])
+  const [listasDiaristas, setListasDiaristas] = useState<ListaDiaristas[]>([])
   const [listaDiaristasSelecionada, setListaDiaristasSelecionada] =
     useState<ListaDiaristas | null>(null)
 
@@ -1389,6 +1365,86 @@ function App() {
     setFechamentos(registros)
   }
 
+  async function carregarListasDiaristasSupabase() {
+    const { data: listas, error: erroListas } = await supabase
+      .from('work_lists')
+      .select('id, work_date, unit_name, status, notes, created_at')
+      .order('work_date', { ascending: false })
+      .order('created_at', { ascending: false })
+
+    if (erroListas) {
+      console.error('Não foi possível carregar as listas do dia:', erroListas)
+      mostrarNotificacao(
+        `Não foi possível carregar as listas do dia: ${erroListas.message}`,
+        'error'
+      )
+      return
+    }
+
+    const ids = (listas || []).map((lista: any) => lista.id)
+    let vinculos: any[] = []
+
+    if (ids.length > 0) {
+      const { data, error } = await supabase
+        .from('work_list_employees')
+        .select(
+          'work_list_id, employee_id, scheduled_start, scheduled_end, status, observation, employee:employees!work_list_employees_employee_id_fkey(id, full_name)'
+        )
+        .in('work_list_id', ids)
+
+      if (error) {
+        console.error('Não foi possível carregar os diaristas das listas:', error)
+        mostrarNotificacao(
+          `Não foi possível carregar os diaristas das listas: ${error.message}`,
+          'error'
+        )
+        return
+      }
+
+      vinculos = data || []
+    }
+
+    const listasReais: ListaDiaristas[] = (listas || []).map((lista: any) => {
+      const membros = vinculos.filter((item: any) => item.work_list_id === lista.id)
+      const primeiroHorario = membros.find((item: any) => item.scheduled_start)?.scheduled_start
+
+      return {
+        id: lista.id,
+        data: lista.work_date,
+        local: lista.unit_name || '',
+        horario: primeiroHorario ? String(primeiroHorario).slice(0, 5) : '09:30',
+        observacao: lista.notes || '',
+        diaristas: membros
+          .map((item: any) => {
+            const empregado = Array.isArray(item.employee)
+              ? item.employee[0]
+              : item.employee
+            return empregado?.full_name || ''
+          })
+          .filter(Boolean),
+        ausentes: membros
+          .filter((item: any) => item.status === 'Ausente')
+          .map((item: any) => {
+            const empregado = Array.isArray(item.employee)
+              ? item.employee[0]
+              : item.employee
+            return empregado?.full_name || ''
+          })
+          .filter(Boolean),
+        criadaEm: lista.created_at
+          ? new Date(lista.created_at).toLocaleString('pt-BR')
+          : '',
+      }
+    })
+
+    setListasDiaristas(listasReais)
+
+    setListaDiaristasSelecionada((atual) => {
+      if (!atual) return null
+      return listasReais.find((lista) => lista.id === atual.id) || null
+    })
+  }
+
   async function carregarPontosSupabase() {
     const [{ data: pontos, error: erroPontos }, { data: empregados, error: erroEmpregados }] =
       await Promise.all([
@@ -1510,6 +1566,7 @@ function App() {
 
     void (async () => {
       await carregarFuncionariosSupabase()
+      await carregarListasDiaristasSupabase()
       await carregarPontosSupabase()
       await carregarDiariasSupabase()
       await carregarFechamentosSupabase()
@@ -1815,6 +1872,114 @@ function App() {
     )
     setDiariaEditando(null)
     mostrarNotificacao('Diária atualizada no Supabase.', 'success')
+  }
+
+  async function cancelarDiaria(index: number) {
+    const diaria = diarias[index]
+
+    if (!diaria) return
+
+    if (!podeAdministrar) {
+      mostrarNotificacao('Somente o Administrador pode cancelar uma diária.', 'warning')
+      return
+    }
+
+    if (!diaria.id) {
+      mostrarNotificacao(
+        'Esta diária não possui vínculo com o Supabase. Recarregue a página e tente novamente.',
+        'error'
+      )
+      return
+    }
+
+    if (diaria.status === 'Cancelada') {
+      mostrarNotificacao('Esta diária já está cancelada.', 'info')
+      return
+    }
+
+    const { data: vinculoFechamento, error: erroVinculo } = await supabase
+      .from('closing_daily_records')
+      .select('closing_id')
+      .eq('daily_record_id', diaria.id)
+      .limit(1)
+      .maybeSingle()
+
+    if (erroVinculo) {
+      console.error('Não foi possível verificar o fechamento da diária:', erroVinculo)
+      mostrarNotificacao(
+        `Não foi possível verificar se a diária está em um fechamento: ${erroVinculo.message}`,
+        'error'
+      )
+      return
+    }
+
+    if (vinculoFechamento?.closing_id) {
+      mostrarNotificacao(
+        'Esta diária já está vinculada a um fechamento. Para preservar os valores financeiros, ela não pode ser cancelada por esta tela.',
+        'warning'
+      )
+      return
+    }
+
+    const motivo = window.prompt(
+      `Motivo do cancelamento da diária de ${diaria.nome} em ${diaria.data}:`
+    )
+
+    if (motivo === null) return
+
+    if (!motivo.trim()) {
+      mostrarNotificacao('Informe o motivo do cancelamento da diária.', 'warning')
+      return
+    }
+
+    const confirmou = window.confirm(
+      `Cancelar a diária de ${diaria.nome} em ${diaria.data}?\n\n` +
+        `Valor: ${moeda(diaria.valor)}\n` +
+        `Motivo: ${motivo.trim()}\n\n` +
+        'A diária permanecerá no histórico com status Cancelada.'
+    )
+
+    if (!confirmou) return
+
+    const { data: authData } = await supabase.auth.getUser()
+    const observacaoAnterior = diaria.observacao?.trim()
+    const novaObservacao = [
+      observacaoAnterior,
+      `Cancelada: ${motivo.trim()}`,
+    ]
+      .filter(Boolean)
+      .join(' | ')
+
+    const { error } = await supabase
+      .from('daily_records')
+      .update({
+        status: 'Cancelada',
+        observation: novaObservacao || null,
+        updated_by: authData.user?.id || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', diaria.id)
+
+    if (error) {
+      console.error('Não foi possível cancelar a diária:', error)
+      mostrarNotificacao(`Não foi possível cancelar a diária: ${error.message}`, 'error')
+      return
+    }
+
+    await registrarAuditoria(
+      'Diária cancelada',
+      'Diárias',
+      `${diaria.nome} - ${diaria.data}: diária de ${moeda(
+        diaria.valor
+      )} cancelada. Motivo: ${motivo.trim()}.`,
+      'Atenção',
+      undefined,
+      'daily_record',
+      diaria.id
+    )
+
+    await carregarDiariasSupabase()
+    mostrarNotificacao('Diária cancelada com sucesso.', 'success')
   }
 
   function moeda(valor: number) {
@@ -2506,9 +2671,14 @@ function App() {
     mostrarNotificacao('Lista exportada com sucesso.', 'success')
   }
 
-  function salvarListaDiaristas() {
+  async function salvarListaDiaristas() {
     if (!dataListaDiaristas) {
       mostrarNotificacao('Informe a data da lista.', 'warning')
+      return
+    }
+
+    if (!localListaDiaristas.trim()) {
+      mostrarNotificacao('Informe o local da lista.', 'warning')
       return
     }
 
@@ -2520,18 +2690,118 @@ function App() {
       return
     }
 
-    const novaLista: ListaDiaristas = {
-      id: Date.now(),
-      data: dataListaDiaristas,
-      local: localListaDiaristas.trim(),
-      horario: horarioListaDiaristas,
-      observacao: observacaoListaDiaristas.trim(),
-      diaristas: diaristasSelecionados,
-      criadaEm: new Date().toLocaleString('pt-BR'),
+    const funcionariosSelecionados = diaristasSelecionados
+      .map((nome) => funcionarios.find((funcionario) => funcionario.nome === nome))
+      .filter((funcionario): funcionario is Funcionario => Boolean(funcionario?.id))
+
+    if (funcionariosSelecionados.length !== diaristasSelecionados.length) {
+      mostrarNotificacao(
+        'Não foi possível identificar todos os funcionários selecionados no banco.',
+        'error'
+      )
+      return
     }
 
-    setListasDiaristas((atual) => [novaLista, ...atual])
-    setListaDiaristasSelecionada(novaLista)
+    const local = localListaDiaristas.trim()
+    const observacao = observacaoListaDiaristas.trim()
+
+    const { data: existente, error: erroBusca } = await supabase
+      .from('work_lists')
+      .select('id')
+      .eq('work_date', dataListaDiaristas)
+      .eq('unit_name', local)
+      .maybeSingle()
+
+    if (erroBusca) {
+      mostrarNotificacao(`Não foi possível verificar a lista: ${erroBusca.message}`, 'error')
+      return
+    }
+
+    let listaId = existente?.id as string | undefined
+
+    if (listaId) {
+      const { error: erroAtualizar } = await supabase
+        .from('work_lists')
+        .update({
+          notes: observacao || null,
+          status: 'Aberta',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', listaId)
+
+      if (erroAtualizar) {
+        mostrarNotificacao(`Não foi possível atualizar a lista: ${erroAtualizar.message}`, 'error')
+        return
+      }
+
+      const { error: erroLimpar } = await supabase
+        .from('work_list_employees')
+        .delete()
+        .eq('work_list_id', listaId)
+
+      if (erroLimpar) {
+        mostrarNotificacao(`Não foi possível atualizar os diaristas da lista: ${erroLimpar.message}`, 'error')
+        return
+      }
+    } else {
+      const { data: criada, error: erroCriar } = await supabase
+        .from('work_lists')
+        .insert({
+          work_date: dataListaDiaristas,
+          unit_name: local,
+          status: 'Aberta',
+          notes: observacao || null,
+          created_by: usuarioLogado?.authId || null,
+        })
+        .select('id')
+        .single()
+
+      if (erroCriar || !criada?.id) {
+        mostrarNotificacao(
+          `Não foi possível salvar a lista: ${erroCriar?.message || 'erro desconhecido'}`,
+          'error'
+        )
+        return
+      }
+
+      listaId = criada.id
+    }
+
+    const { error: erroVinculos } = await supabase
+      .from('work_list_employees')
+      .insert(
+        funcionariosSelecionados.map((funcionario) => ({
+          work_list_id: listaId,
+          employee_id: funcionario.id,
+          scheduled_start: horarioListaDiaristas || '09:30',
+          scheduled_end: '18:30',
+          status: 'Escalado',
+          observation: null,
+        }))
+      )
+
+    if (erroVinculos) {
+      mostrarNotificacao(
+        `A lista foi criada, mas houve erro ao vincular os diaristas: ${erroVinculos.message}`,
+        'error'
+      )
+      await carregarListasDiaristasSupabase()
+      return
+    }
+
+    await carregarListasDiaristasSupabase()
+
+    const listaSalva: ListaDiaristas = {
+      id: listaId!,
+      data: dataListaDiaristas,
+      local,
+      horario: horarioListaDiaristas || '09:30',
+      observacao,
+      diaristas: [...diaristasSelecionados],
+      ausentes: [],
+      criadaEm: new Date().toLocaleString('pt-BR'),
+    }
+    setListaDiaristasSelecionada(listaSalva)
 
     mostrarNotificacao(
       `Lista de ${formatarDataLista(dataListaDiaristas)} salva com ${diaristasSelecionados.length} diarista(s).`,
@@ -2540,7 +2810,7 @@ function App() {
   }
 
   function novaListaDiaristas() {
-    setDataListaDiaristas(new Date().toISOString().slice(0, 10))
+    setDataListaDiaristas(dataLocalHoje)
     setLocalListaDiaristas('DHL Mogi Mirim')
     setHorarioListaDiaristas('09:30')
     setObservacaoListaDiaristas('')
@@ -2549,14 +2819,229 @@ function App() {
     setListaDiaristasSelecionada(null)
   }
 
-  function excluirListaDiaristas(id: number) {
-    setListasDiaristas((atual) => atual.filter((lista) => lista.id !== id))
+  async function excluirListaDiaristas(id: string) {
+    const lista = listasDiaristas.find((item) => item.id === id)
+    if (!lista) return
+
+    const confirmou = window.confirm(
+      `Excluir a lista de ${formatarDataLista(lista.data)} - ${lista.local}?
+
+` +
+        `Os ${lista.diaristas.length} funcionário(s) vinculados a esta lista serão removidos somente da escala. ` +
+        `Os cadastros dos funcionários não serão apagados.
+
+Essa ação não pode ser desfeita.`
+    )
+
+    if (!confirmou) return
+
+    const { error } = await supabase
+      .from('work_lists')
+      .delete()
+      .eq('id', id)
+
+    if (error) {
+      console.error('Não foi possível excluir a lista:', error)
+      mostrarNotificacao(`Não foi possível excluir a lista: ${error.message}`, 'error')
+      return
+    }
 
     if (listaDiaristasSelecionada?.id === id) {
       setListaDiaristasSelecionada(null)
     }
 
-    mostrarNotificacao('Lista removida.', 'info')
+    await carregarListasDiaristasSupabase()
+    mostrarNotificacao('Lista excluída com sucesso.', 'success')
+  }
+
+  async function lancarFaltaLista(nomeFuncionario: string) {
+    if (!listaDiaristasSelecionada?.id) {
+      mostrarNotificacao('Selecione uma Lista do Dia.', 'warning')
+      return
+    }
+
+    const funcionario = funcionarios.find((item) => item.nome === nomeFuncionario)
+    if (!funcionario?.id) {
+      mostrarNotificacao('Não foi possível localizar o funcionário no banco.', 'error')
+      return
+    }
+
+    const motivo = window.prompt(
+      `Justificativa da falta de ${nomeFuncionario}:`,
+      'Falta não justificada'
+    )
+
+    if (motivo === null) return
+    if (!motivo.trim()) {
+      mostrarNotificacao('Informe uma justificativa para lançar a falta.', 'warning')
+      return
+    }
+
+    const confirmou = window.confirm(
+      `Confirmar falta de ${nomeFuncionario} na lista de ${formatarDataLista(
+        listaDiaristasSelecionada.data
+      )}?`
+    )
+    if (!confirmou) return
+
+    const { error } = await supabase
+      .from('work_list_employees')
+      .update({
+        status: 'Ausente',
+        observation: motivo.trim(),
+      })
+      .eq('work_list_id', listaDiaristasSelecionada.id)
+      .eq('employee_id', funcionario.id)
+
+    if (error) {
+      mostrarNotificacao(`Não foi possível lançar a falta: ${error.message}`, 'error')
+      return
+    }
+
+    await registrarAuditoria(
+      'Falta lançada',
+      'Lista do Dia',
+      `${nomeFuncionario} marcado como ausente em ${formatarDataLista(
+        listaDiaristasSelecionada.data
+      )}. Motivo: ${motivo.trim()}.`,
+      'Atenção',
+      undefined,
+      'employee',
+      funcionario.id
+    )
+
+    await carregarListasDiaristasSupabase()
+    mostrarNotificacao(`Falta de ${nomeFuncionario} lançada com sucesso.`, 'success')
+  }
+
+  async function excluirRegistroPonto(registro: RegistroPonto) {
+    if (!podeEditar) {
+      mostrarNotificacao('Você não possui permissão para excluir registros de ponto.', 'warning')
+      return
+    }
+
+    if (!registro.id) {
+      mostrarNotificacao('Este ponto não possui vínculo com o Supabase.', 'error')
+      return
+    }
+
+    const diariaDoDia = diarias.find(
+      (diaria) =>
+        diaria.employeeId === registro.employeeId &&
+        diaria.data === registro.data &&
+        diaria.status !== 'Cancelada'
+    )
+
+    if (diariaDoDia) {
+      mostrarNotificacao(
+        'Existe uma diária vinculada a este funcionário nesta data. Cancele a diária antes de excluir o ponto para não deixar o financeiro inconsistente.',
+        'warning'
+      )
+      return
+    }
+
+    const motivo = window.prompt(
+      `Motivo da exclusão do ponto de ${registro.nome} em ${registro.data} às ${registro.horario}:`
+    )
+
+    if (motivo === null) return
+    if (!motivo.trim()) {
+      mostrarNotificacao('Informe o motivo da exclusão do ponto.', 'warning')
+      return
+    }
+
+    const confirmou = window.confirm(
+      `Excluir definitivamente este registro de ${registro.tipoRegistro || 'ponto'}?\n\n` +
+        `${registro.nome} • ${registro.data} • ${registro.horario}\n\n` +
+        'O registro será removido do ponto, mas a exclusão ficará registrada na auditoria.'
+    )
+    if (!confirmou) return
+
+    const { error } = await supabase
+      .from('attendance_records')
+      .delete()
+      .eq('id', registro.id)
+
+    if (error) {
+      mostrarNotificacao(`Não foi possível excluir o ponto: ${error.message}`, 'error')
+      return
+    }
+
+    await registrarAuditoria(
+      'Registro de ponto excluído',
+      'Controle de Ponto',
+      `${registro.nome}: ${registro.tipoRegistro || 'Ponto'} de ${registro.data} às ${
+        registro.horario
+      } excluído. Motivo: ${motivo.trim()}.`,
+      'Crítico',
+      undefined,
+      'attendance_record',
+      registro.id
+    )
+
+    setRegistroPontoSelecionado(null)
+    await carregarPontosSupabase()
+    mostrarNotificacao('Registro de ponto excluído com sucesso.', 'success')
+  }
+
+  async function excluirFuncionario(funcionario: Funcionario) {
+    if (usuarioLogado?.perfil !== 'Administrador') {
+      mostrarNotificacao('Somente o Administrador Geral pode excluir funcionários.', 'warning')
+      return
+    }
+
+    if (!funcionario.id) {
+      mostrarNotificacao('Este funcionário não possui vínculo com o Supabase.', 'error')
+      return
+    }
+
+    const confirmou = window.confirm(
+      `Excluir definitivamente o cadastro de ${funcionario.nome}?\n\n` +
+        'Use esta opção somente para cadastros criados por engano. Se houver histórico de ponto, diária, pagamento, documentos, biometria ou listas, o banco poderá bloquear a exclusão para preservar o histórico.\n\n' +
+        'Para alguém que apenas deixou de trabalhar, prefira Desativar funcionário.'
+    )
+    if (!confirmou) return
+
+    const confirmouNome = window.prompt(
+      `Para confirmar, digite exatamente o nome do funcionário:\n${funcionario.nome}`
+    )
+    if (confirmouNome !== funcionario.nome) {
+      if (confirmouNome !== null) {
+        mostrarNotificacao('O nome digitado não confere. Exclusão cancelada.', 'warning')
+      }
+      return
+    }
+
+    const { error } = await supabase
+      .from('employees')
+      .delete()
+      .eq('id', funcionario.id)
+
+    if (error) {
+      console.error('Não foi possível excluir o funcionário:', error)
+      mostrarNotificacao(
+        `Não foi possível excluir este funcionário. Ele provavelmente possui histórico vinculado. Nesse caso, use "Desativar funcionário". Detalhe: ${error.message}`,
+        'warning'
+      )
+      return
+    }
+
+    await registrarAuditoria(
+      'Funcionário excluído',
+      'Funcionários',
+      `${funcionario.nome} (${funcionario.cpf}) foi excluído definitivamente por ser um cadastro sem histórico operacional.`,
+      'Crítico',
+      undefined,
+      'employee',
+      funcionario.id
+    )
+
+    setFuncionarioSelecionado(null)
+    setEditandoFuncionario(false)
+    setFuncionarioEmEdicao(null)
+    await carregarFuncionariosSupabase()
+    await carregarListasDiaristasSupabase()
+    mostrarNotificacao('Funcionário excluído definitivamente.', 'success')
   }
 
   const diaristasDisponiveis = useMemo(() => {
@@ -3823,6 +4308,166 @@ function App() {
       `${registro.tipoRegistro || 'Entrada'} de ${registro.nome} registrada e salva no Supabase.`,
       'success'
     )
+  }
+
+  function abrirAjustePonto(registro?: RegistroPonto) {
+    const agora = new Date()
+    const dataPadrao = registro?.data
+      ? (() => {
+          const [dia, mes, ano] = registro.data.split('/')
+          return dia && mes && ano ? `${ano}-${mes}-${dia}` : dataLocalHoje
+        })()
+      : dataLocalHoje
+
+    const horarioPadrao = registro?.horario && registro.horario !== '--:--'
+      ? registro.horario
+      : agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+
+    setAjustePontoFuncionarioId(registro?.employeeId || '')
+    setAjustePontoData(dataPadrao)
+    setAjustePontoHorario(horarioPadrao)
+    setAjustePontoTipo(registro?.tipoRegistro || 'Entrada')
+    setAjustePontoMotivo('')
+    setAjustePontoAberto(true)
+  }
+
+  async function salvarAjustePonto() {
+    if (usuarioLogado?.perfil === 'Consulta') {
+      mostrarNotificacao('Seu perfil não possui permissão para ajustar pontos.', 'error')
+      return
+    }
+
+    const funcionario = funcionarios.find(
+      (item) => item.id === ajustePontoFuncionarioId
+    )
+
+    if (!funcionario?.id) {
+      mostrarNotificacao('Selecione o funcionário do ajuste.', 'warning')
+      return
+    }
+
+    if (!ajustePontoData || !ajustePontoHorario) {
+      mostrarNotificacao('Informe a data e o horário do ponto.', 'warning')
+      return
+    }
+
+    const motivo = ajustePontoMotivo.trim()
+    if (motivo.length < 8) {
+      mostrarNotificacao('Informe uma justificativa com pelo menos 8 caracteres.', 'warning')
+      return
+    }
+
+    const ocorridoEm = new Date(`${ajustePontoData}T${ajustePontoHorario}:00-03:00`)
+    if (Number.isNaN(ocorridoEm.getTime())) {
+      mostrarNotificacao('Data ou horário inválido para o ajuste.', 'error')
+      return
+    }
+
+    if (ocorridoEm.getTime() > Date.now() + 60_000) {
+      mostrarNotificacao('Não é possível registrar um ponto manual no futuro.', 'warning')
+      return
+    }
+
+    setAjustePontoSalvando(true)
+
+    try {
+      const inicioMinuto = new Date(ocorridoEm)
+      inicioMinuto.setSeconds(0, 0)
+      const fimMinuto = new Date(inicioMinuto.getTime() + 60_000)
+
+      const { data: duplicado, error: erroDuplicado } = await supabase
+        .from('attendance_records')
+        .select('id, record_type, occurred_at')
+        .eq('employee_id', funcionario.id)
+        .eq('record_type', ajustePontoTipo)
+        .gte('occurred_at', inicioMinuto.toISOString())
+        .lt('occurred_at', fimMinuto.toISOString())
+        .limit(1)
+        .maybeSingle()
+
+      if (erroDuplicado) {
+        throw erroDuplicado
+      }
+
+      if (duplicado) {
+        mostrarNotificacao(
+          `Já existe uma ${ajustePontoTipo.toLowerCase()} desse funcionário nesse mesmo minuto.`,
+          'warning'
+        )
+        return
+      }
+
+      const { data: authData } = await supabase.auth.getUser()
+      const usuarioId = authData.user?.id || null
+      const observacao = `AJUSTE MANUAL — ${motivo}`
+
+      const { data: pontoCriado, error: erroInsert } = await supabase
+        .from('attendance_records')
+        .insert({
+          employee_id: funcionario.id,
+          occurred_at: ocorridoEm.toISOString(),
+          record_type: ajustePontoTipo,
+          source: 'Manual',
+          facial_verified: false,
+          facial_confidence: null,
+          terminal_id: null,
+          observation: observacao,
+          created_by: usuarioId,
+        })
+        .select('id')
+        .single()
+
+      if (erroInsert || !pontoCriado) {
+        throw erroInsert || new Error('O Supabase não retornou o registro criado.')
+      }
+
+      let diariaGerada = false
+      let erroDiaria: string | null = null
+
+      if (ajustePontoTipo === 'Saída') {
+        const resultado = await gerarDiariaDoPontoSupabase(
+          funcionario.id,
+          ocorridoEm,
+          usuarioId
+        )
+        diariaGerada = resultado.criada
+        erroDiaria = resultado.erro
+      }
+
+      await registrarAuditoria(
+        'Ajuste manual de ponto',
+        'Controle de Ponto',
+        `${ajustePontoTipo} de ${funcionario.nome} ajustada para ${ajustePontoData.split('-').reverse().join('/')} às ${ajustePontoHorario}. Justificativa: ${motivo}`,
+        'Atenção'
+      )
+
+      await carregarPontosSupabase()
+      setAjustePontoAberto(false)
+      setAjustePontoMotivo('')
+
+      if (erroDiaria) {
+        mostrarNotificacao(
+          `Ponto ajustado, mas a diária não pôde ser gerada: ${erroDiaria}`,
+          'warning'
+        )
+        return
+      }
+
+      mostrarNotificacao(
+        diariaGerada
+          ? `Ponto de ${funcionario.nome} ajustado e diária gerada.`
+          : `Ponto de ${funcionario.nome} ajustado com sucesso.`,
+        'success'
+      )
+    } catch (error: any) {
+      console.error('Não foi possível salvar o ajuste de ponto:', error)
+      mostrarNotificacao(
+        `Não foi possível salvar o ajuste: ${error?.message || 'erro desconhecido'}`,
+        'error'
+      )
+    } finally {
+      setAjustePontoSalvando(false)
+    }
   }
 
   function gerarDiariasDaListaSelecionada() {
@@ -5272,10 +5917,16 @@ function App() {
     .filter((diaria) => diaria.status === 'Pendente')
     .reduce((total, diaria) => total + diaria.valor, 0)
 
-  const fechamentoAtual =
+  const periodoAtualDashboard = periodoFechamentoPorData(new Date())
+
+  const fechamentoAtual: Fechamento =
     fechamentos.find(
-      (fechamento) => fechamento.periodo === '16/08/2026 a 31/08/2026'
-    ) ?? fechamentos[1]
+      (fechamento) => fechamento.periodo === periodoAtualDashboard.periodo
+    ) ?? {
+      periodo: periodoAtualDashboard.periodo,
+      pagamento: periodoAtualDashboard.pagamento,
+      status: 'Em conferência',
+    }
 
   const funcionarioPixSelecionado = pagamentoPixSelecionado
     ? obterFuncionarioPorNome(pagamentoPixSelecionado.nome)
@@ -11260,6 +11911,23 @@ function App() {
                                 ? 'Desativar funcionário'
                                 : 'Reativar funcionário'}
                             </button>
+
+                            <button
+                              type="button"
+                              onClick={() => void excluirFuncionario(funcionarioSelecionado)}
+                              style={{
+                                padding: '9px 13px',
+                                borderRadius: '10px',
+                                border: '1px solid rgba(255,170,170,.42)',
+                                background: 'rgba(125,20,35,.42)',
+                                color: '#ffffff',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Excluir funcionário
+                            </button>
                           </>
                         )}
                       </div>
@@ -12772,13 +13440,25 @@ function App() {
                         </span>
                       </div>
 
-                      <button
-                        className="primary-button"
-                        onClick={() => setModoAcesso('totem')}
-                        style={{ padding: '10px 14px', fontSize: '11px' }}
-                      >
-                        ◉ Abrir Totem
-                      </button>
+                      <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap' }}>
+                        {podeEditar && (
+                          <button
+                            className="secondary-button"
+                            onClick={() => abrirAjustePonto()}
+                            style={{ padding: '10px 14px', fontSize: '11px' }}
+                          >
+                            ✎ Ajustar ponto
+                          </button>
+                        )}
+
+                        <button
+                          className="primary-button"
+                          onClick={() => setModoAcesso('totem')}
+                          style={{ padding: '10px 14px', fontSize: '11px' }}
+                        >
+                          ◉ Abrir Totem
+                        </button>
+                      </div>
                     </div>
 
                     <div className="table-wrapper">
@@ -12895,20 +13575,35 @@ function App() {
                                     <button
                                       className="action-button"
                                       onClick={() =>
-                                        registrarPontoManual(indexOriginal)
+                                        abrirAjustePonto(registro)
                                       }
                                     >
-                                      Registrar {registro.tipoRegistro || 'Entrada'}
+                                      Ajustar {registro.tipoRegistro || 'Entrada'}
                                     </button>
                                   ) : (
-                                    <button
-                                      className="action-button"
-                                      onClick={() =>
-                                        setRegistroPontoSelecionado(registro)
-                                      }
-                                    >
-                                      Ver detalhes
-                                    </button>
+                                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                      <button
+                                        className="action-button"
+                                        onClick={() =>
+                                          setRegistroPontoSelecionado(registro)
+                                        }
+                                      >
+                                        Ver detalhes
+                                      </button>
+                                      {podeEditar && (
+                                        <button
+                                          className="action-button"
+                                          onClick={() => void excluirRegistroPonto(registro)}
+                                          style={{
+                                            color: '#a33f49',
+                                            borderColor: '#ecc9cd',
+                                            background: '#fff7f7',
+                                          }}
+                                        >
+                                          Excluir
+                                        </button>
+                                      )}
+                                    </div>
                                   )}
                                 </td>
                               </tr>
@@ -12924,6 +13619,221 @@ function App() {
                       )}
                     </div>
                   </div>
+
+                  {ajustePontoAberto && (
+                    <div
+                      style={{
+                        position: 'fixed',
+                        inset: 0,
+                        zIndex: 9998,
+                        background: 'rgba(26, 15, 33, .62)',
+                        backdropFilter: 'blur(6px)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '18px',
+                      }}
+                      onClick={() => !ajustePontoSalvando && setAjustePontoAberto(false)}
+                    >
+                      <div
+                        style={{
+                          width: '100%',
+                          maxWidth: '610px',
+                          maxHeight: '92vh',
+                          overflowY: 'auto',
+                          background: '#ffffff',
+                          borderRadius: '22px',
+                          boxShadow: '0 28px 70px rgba(30, 15, 40, .30)',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div
+                          style={{
+                            padding: '21px 23px',
+                            background: 'linear-gradient(135deg, #35134f, #6b2c91)',
+                            color: '#ffffff',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            gap: '14px',
+                          }}
+                        >
+                          <div>
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                fontWeight: 800,
+                                letterSpacing: '1.2px',
+                                opacity: 0.74,
+                              }}
+                            >
+                              CONTROLE ADMINISTRATIVO
+                            </span>
+                            <h2
+                              style={{
+                                margin: '6px 0 4px',
+                                color: '#ffffff',
+                                fontSize: '21px',
+                              }}
+                            >
+                              Ajustar ponto
+                            </h2>
+                            <span style={{ fontSize: '10px', opacity: 0.76 }}>
+                              Registre uma entrada ou saída esquecida com data, horário e justificativa.
+                            </span>
+                          </div>
+
+                          <button
+                            onClick={() => setAjustePontoAberto(false)}
+                            disabled={ajustePontoSalvando}
+                            style={{
+                              width: '35px',
+                              height: '35px',
+                              border: '1px solid rgba(255,255,255,.18)',
+                              borderRadius: '10px',
+                              background: 'rgba(255,255,255,.10)',
+                              color: '#ffffff',
+                              cursor: 'pointer',
+                              fontSize: '18px',
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+
+                        <div style={{ padding: '22px 23px 24px' }}>
+                          <div
+                            style={{
+                              padding: '11px 13px',
+                              borderRadius: '12px',
+                              background: '#fff8e8',
+                              border: '1px solid #f0dfb4',
+                              color: '#765c22',
+                              fontSize: '10px',
+                              lineHeight: 1.55,
+                              marginBottom: '17px',
+                            }}
+                          >
+                            <strong>Ajuste administrativo.</strong> O registro será salvo como método Manual e a justificativa ficará vinculada ao ponto e à auditoria.
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                              gap: '13px',
+                            }}
+                          >
+                            <div className="filter-field">
+                              <label>Funcionário *</label>
+                              <select
+                                value={ajustePontoFuncionarioId}
+                                onChange={(e) => setAjustePontoFuncionarioId(e.target.value)}
+                                disabled={ajustePontoSalvando}
+                              >
+                                <option value="">Selecione...</option>
+                                {funcionarios
+                                  .filter((funcionario) => funcionario.status === 'Ativo')
+                                  .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+                                  .map((funcionario) => (
+                                    <option key={funcionario.id} value={funcionario.id}>
+                                      {funcionario.nome}
+                                    </option>
+                                  ))}
+                              </select>
+                            </div>
+
+                            <div className="filter-field">
+                              <label>Tipo de registro *</label>
+                              <select
+                                value={ajustePontoTipo}
+                                onChange={(e) => setAjustePontoTipo(e.target.value as 'Entrada' | 'Saída')}
+                                disabled={ajustePontoSalvando}
+                              >
+                                <option value="Entrada">Entrada</option>
+                                <option value="Saída">Saída</option>
+                              </select>
+                            </div>
+
+                            <div className="filter-field">
+                              <label>Data *</label>
+                              <input
+                                type="date"
+                                value={ajustePontoData}
+                                max={dataLocalHoje}
+                                onChange={(e) => setAjustePontoData(e.target.value)}
+                                disabled={ajustePontoSalvando}
+                              />
+                            </div>
+
+                            <div className="filter-field">
+                              <label>Horário *</label>
+                              <input
+                                type="time"
+                                value={ajustePontoHorario}
+                                onChange={(e) => setAjustePontoHorario(e.target.value)}
+                                disabled={ajustePontoSalvando}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="filter-field" style={{ marginTop: '14px' }}>
+                            <label>Justificativa obrigatória *</label>
+                            <textarea
+                              value={ajustePontoMotivo}
+                              onChange={(e) => setAjustePontoMotivo(e.target.value)}
+                              disabled={ajustePontoSalvando}
+                              placeholder="Ex.: Funcionário esqueceu de registrar a saída no fim do turno."
+                              rows={4}
+                              style={{
+                                width: '100%',
+                                resize: 'vertical',
+                                minHeight: '94px',
+                                padding: '11px 12px',
+                                border: '1px solid #ded6e1',
+                                borderRadius: '11px',
+                                fontFamily: 'inherit',
+                                fontSize: '11px',
+                                color: '#3d3341',
+                                background: '#ffffff',
+                                outline: 'none',
+                              }}
+                            />
+                            <span style={{ color: '#99909c', fontSize: '9px', marginTop: '5px' }}>
+                              Mínimo de 8 caracteres. A justificativa não poderá ficar vazia.
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'flex-end',
+                              gap: '9px',
+                              flexWrap: 'wrap',
+                              marginTop: '19px',
+                              paddingTop: '17px',
+                              borderTop: '1px solid #eee8f0',
+                            }}
+                          >
+                            <button
+                              className="secondary-button"
+                              onClick={() => setAjustePontoAberto(false)}
+                              disabled={ajustePontoSalvando}
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              className="primary-button"
+                              onClick={salvarAjustePonto}
+                              disabled={ajustePontoSalvando}
+                            >
+                              {ajustePontoSalvando ? 'Salvando ajuste...' : '✓ Salvar ajuste de ponto'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {registroPontoSelecionado && (
                     <div
@@ -13831,17 +14741,20 @@ function App() {
                             </button>
 
                             <button
-                              onClick={() => excluirListaDiaristas(lista.id)}
+                              onClick={() => void excluirListaDiaristas(lista.id)}
                               title="Excluir lista"
                               style={{
-                                border: 0,
-                                background: 'transparent',
-                                color: '#b06b6b',
+                                border: '1px solid #f1dada',
+                                background: '#fff7f7',
+                                color: '#a94f4f',
                                 cursor: 'pointer',
-                                fontSize: '14px',
+                                fontSize: '9px',
+                                fontWeight: 800,
+                                borderRadius: '9px',
+                                padding: '7px 9px',
                               }}
                             >
-                              ×
+                              Excluir
                             </button>
                           </div>
 
@@ -13992,8 +14905,14 @@ function App() {
                   )
                 : []
 
+              const faltasLancadasLista = listaReferencia?.ausentes || []
+
               const faltaramLista = listaReferencia
-                ? convocados.filter((nome) => !presentesLista.includes(nome))
+                ? convocados.filter(
+                    (nome) =>
+                      !presentesLista.includes(nome) &&
+                      !faltasLancadasLista.includes(nome)
+                  )
                 : []
 
               const diariasGeradasLista = listaReferencia
@@ -14274,7 +15193,7 @@ function App() {
                           <select
                             value={listaReferencia?.id ?? ''}
                             onChange={(e) => {
-                              const id = Number(e.target.value)
+                              const id = e.target.value
                               const lista =
                                 listasDiaristas.find(
                                   (item) => item.id === id
@@ -14378,10 +15297,66 @@ function App() {
                             lineHeight: 1.5,
                           }}
                         >
-                          {faltaramLista.join(', ')}. Nenhuma diária será gerada
-                          para esses nomes até existir um ponto confirmado.
+                          Nenhuma diária será gerada para esses nomes até existir um ponto confirmado ou a situação ser tratada.
                         </span>
+
+                        {podeEditar && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              gap: '8px',
+                              flexWrap: 'wrap',
+                              marginTop: '10px',
+                            }}
+                          >
+                            {faltaramLista.map((nome) => (
+                              <button
+                                key={nome}
+                                type="button"
+                                onClick={() => void lancarFaltaLista(nome)}
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: '9px',
+                                  border: '1px solid #e3c66f',
+                                  background: '#ffffff',
+                                  color: '#8d5d00',
+                                  fontSize: '10px',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Lançar falta • {nome}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
+                    </div>
+                  )}
+
+                  {listaReferencia && faltasLancadasLista.length > 0 && (
+                    <div
+                      style={{
+                        padding: '14px 16px',
+                        borderRadius: '14px',
+                        background: '#fff1f1',
+                        border: '1px solid #efcaca',
+                        marginBottom: '18px',
+                      }}
+                    >
+                      <strong
+                        style={{
+                          display: 'block',
+                          color: '#9a3e48',
+                          fontSize: '12px',
+                          marginBottom: '5px',
+                        }}
+                      >
+                        Faltas lançadas: {faltasLancadasLista.length}
+                      </strong>
+                      <span style={{ color: '#a45b63', fontSize: '10px' }}>
+                        {faltasLancadasLista.join(', ')}
+                      </span>
                     </div>
                   )}
 
@@ -14786,10 +15761,14 @@ function App() {
                                         background:
                                           diaria.status === 'Aprovada'
                                             ? '#eaf8ef'
+                                            : diaria.status === 'Cancelada'
+                                            ? '#fff0f1'
                                             : '#f1e9f5',
                                         color:
                                           diaria.status === 'Aprovada'
                                             ? '#18794a'
+                                            : diaria.status === 'Cancelada'
+                                            ? '#a33f49'
                                             : '#5a2776',
                                         fontSize: '9px',
                                         fontWeight: 750,
@@ -14797,6 +15776,8 @@ function App() {
                                     >
                                       {diaria.status === 'Aprovada'
                                         ? 'Aprovada'
+                                        : diaria.status === 'Cancelada'
+                                        ? 'Cancelada'
                                         : 'Em conferência'}
                                     </span>
                                   </td>
@@ -14810,17 +15791,39 @@ function App() {
                                         >
                                           Aprovar
                                         </button>
+                                      ) : diaria.status === 'Cancelada' ? (
+                                        <span
+                                          className="registered-text"
+                                          style={{ color: '#a33f49' }}
+                                        >
+                                          Cancelada
+                                        </span>
                                       ) : (
                                         <span className="registered-text">Aprovada</span>
                                       )}
-                                      {podeAdministrar && (
-                                        <button
-                                          className="action-button"
-                                          onClick={() => abrirEdicaoDiaria(indexOriginal)}
-                                          style={{ background: '#fff', border: '1px solid #ddd3e3' }}
-                                        >
-                                          Editar
-                                        </button>
+
+                                      {podeAdministrar && diaria.status !== 'Cancelada' && (
+                                        <>
+                                          <button
+                                            className="action-button"
+                                            onClick={() => abrirEdicaoDiaria(indexOriginal)}
+                                            style={{ background: '#fff', border: '1px solid #ddd3e3' }}
+                                          >
+                                            Editar
+                                          </button>
+
+                                          <button
+                                            className="action-button"
+                                            onClick={() => void cancelarDiaria(indexOriginal)}
+                                            style={{
+                                              background: '#fff7f7',
+                                              border: '1px solid #ecc9cd',
+                                              color: '#a33f49',
+                                            }}
+                                          >
+                                            Cancelar diária
+                                          </button>
+                                        </>
                                       )}
                                     </div>
                                   </td>
