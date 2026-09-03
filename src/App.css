@@ -5627,3 +5627,444 @@ tbody td {
     max-height: calc(100dvh - 12px) !important;
   }
 }
+
+/* =========================================================
+   MOBILE 4.1 — CAMADA RESPONSIVA SEGURA
+   Mantém integralmente o CSS de produção anterior e apenas
+   adiciona correções de responsividade no final do arquivo.
+   ========================================================= */
+
+/* Evita estouro horizontal causado por conteúdos longos. */
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+input,
+select,
+textarea,
+button {
+  max-width: 100%;
+}
+
+/* Elementos flex/grid podem encolher sem forçar a viewport. */
+.content,
+.panel,
+.card,
+.page-header,
+.dashboard-header,
+.dashboard-main-grid,
+.dashboard-bottom-grid,
+.dashboard-card,
+.form-grid,
+.form-group,
+.filter-grid,
+.filter-field,
+.profile-grid,
+.closing-detail-cards,
+.daily-detail-summary,
+.current-values,
+.report-grid,
+.payment-worker-cell,
+.payment-pix-cell,
+.pix-worker-main,
+.pix-content-grid,
+.pix-info-area {
+  min-width: 0;
+}
+
+/* Tabelas continuam completas, mas rolam dentro da própria área. */
+.table-wrapper,
+.payment-table-wrapper,
+.table-container,
+.table-responsive,
+[class*='table-wrapper'],
+[class*='table-container'] {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 760px) {
+  /* Estrutura principal */
+  .app {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .sidebar {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .content {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 16px 12px 28px;
+    overflow-x: hidden;
+  }
+
+  /* Cabeçalhos e ações passam a empilhar. */
+  .page-header,
+  .dashboard-header,
+  .closing-detail-header,
+  .payment-table-header,
+  .form-header,
+  .panel-heading,
+  .filter-header,
+  .employee-profile-header {
+    width: 100%;
+    max-width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .page-header > *,
+  .dashboard-header > *,
+  .closing-detail-header > *,
+  .payment-table-header > *,
+  .form-header > *,
+  .panel-heading > *,
+  .filter-header > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .page-title {
+    font-size: clamp(22px, 7vw, 28px);
+    line-height: 1.15;
+    overflow-wrap: anywhere;
+  }
+
+  .page-subtitle {
+    overflow-wrap: anywhere;
+  }
+
+  /* Cards e grids */
+  .cards,
+  .dashboard-cards,
+  .ponto-cards,
+  .diaria-cards,
+  .fechamento-cards,
+  .pagamento-cards,
+  .documento-cards,
+  .relatorio-cards,
+  .closing-detail-cards,
+  .current-values,
+  .profile-grid,
+  .daily-detail-summary,
+  .fortnight-stats,
+  .quick-actions,
+  .report-grid,
+  .form-grid,
+  .filter-grid,
+  .filter-grid-2,
+  .filter-grid-3,
+  .filter-grid-4,
+  .pix-content-grid,
+  .pix-info-area {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .dashboard-main-grid,
+  .dashboard-bottom-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .card,
+  .panel,
+  .filter-panel,
+  .form-panel,
+  .closing-detail-panel,
+  .daily-detail-panel {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* Formulários */
+  .form-group,
+  .filter-field {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .form-group input,
+  .form-group select,
+  .form-group textarea,
+  .filter-field input,
+  .filter-field select,
+  .filter-field textarea,
+  input,
+  select,
+  textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Evita zoom automático do Safari/iPhone em campos. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .form-actions,
+  .closing-header-actions,
+  .report-actions,
+  .table-actions,
+  .pix-modal-actions {
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: stretch;
+  }
+
+  .form-actions > button,
+  .closing-header-actions > button,
+  .report-actions > button,
+  .pix-modal-actions > button {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  /* Pesquisa de funcionário */
+  .employee-search-box {
+    width: 100%;
+    max-width: 100%;
+    flex-direction: column;
+  }
+
+  /* Perfil */
+  .employee-profile-header {
+    padding: 16px;
+  }
+
+  .profile-avatar {
+    flex: 0 0 auto;
+  }
+
+  /* Biometria e câmera */
+  .biometric-box {
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+  }
+
+  .camera-area,
+  .facial-camera-area,
+  .totem-camera-area,
+  video {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* PIX */
+  .pix-modal-backdrop {
+    padding: 8px;
+    align-items: flex-start;
+    overflow-y: auto;
+  }
+
+  .pix-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 16px);
+    margin: 0;
+    overflow-x: hidden;
+  }
+
+  .pix-modal-header,
+  .pix-worker-card,
+  .pix-payment-highlight,
+  .pix-content-grid,
+  .pix-security-note,
+  .pix-modal-actions {
+    max-width: 100%;
+  }
+
+  .pix-worker-card {
+    min-width: 0;
+  }
+
+  .pix-worker-main,
+  .pix-key-card,
+  .pix-data-box,
+  .pix-paid-info {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .pix-key-card strong,
+  .payment-pix-cell strong {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .pix-qr-area {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .fake-qr-code,
+  .pix-qr-area canvas,
+  .pix-qr-area img {
+    max-width: min(100%, 240px) !important;
+    height: auto !important;
+  }
+
+  /* Tabelas: não cortam; rolam horizontalmente só dentro da tabela. */
+  .table-wrapper,
+  .payment-table-wrapper,
+  .table-container,
+  .table-responsive,
+  [class*='table-wrapper'],
+  [class*='table-container'] {
+    margin-left: 0;
+    margin-right: 0;
+    overflow-x: auto !important;
+    overscroll-behavior-x: contain;
+  }
+
+  table {
+    max-width: none;
+  }
+
+  /* Textos longos não alargam cards. */
+  .profile-grid strong,
+  .profile-grid span,
+  .card strong,
+  .card span,
+  .registered-text,
+  .payment-worker-cell,
+  .payment-pix-cell,
+  .report-row,
+  .closing-detail-card,
+  .current-values,
+  .employee-profile-panel,
+  .daily-detail-panel {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Toast */
+  .notification-toast,
+  .notification,
+  .notification-content {
+    max-width: calc(100vw - 24px);
+  }
+
+  /* Totem */
+  .totem-top {
+    padding: 14px 12px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .totem-content {
+    padding: 18px 10px;
+  }
+
+  .totem-card {
+    width: 100%;
+    max-width: 100%;
+    padding: 18px 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .content {
+    padding: 12px 9px 24px;
+  }
+
+  .panel,
+  .card,
+  .filter-panel,
+  .form-panel {
+    border-radius: 12px;
+  }
+
+  .panel {
+    padding: 14px 11px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .dashboard-card {
+    padding: 14px;
+    gap: 11px;
+  }
+
+  .dashboard-card-icon,
+  .payment-summary-icon {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+  }
+
+  .page-title {
+    font-size: 23px;
+  }
+
+  .primary-button,
+  .secondary-button,
+  .action-button,
+  .payment-confirm-button,
+  .pix-button,
+  .copy-pix-button {
+    min-height: 42px;
+  }
+
+  .pix-modal-backdrop {
+    padding: 4px;
+  }
+
+  .pix-modal {
+    border-radius: 16px;
+    max-height: calc(100dvh - 8px);
+  }
+
+  .pix-modal-header {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .pix-worker-card {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+
+  .pix-payment-highlight,
+  .pix-content-grid,
+  .pix-security-note,
+  .pix-modal-actions {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+
+  .totem-time {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+

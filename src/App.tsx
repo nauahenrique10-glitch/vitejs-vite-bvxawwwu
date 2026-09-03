@@ -375,7 +375,14 @@ function formatarCpf(valor: string) {
 }
 
 function formatarTelefone(valor: string) {
-  const digitos = somenteDigitos(valor).slice(0, 11)
+  let digitos = somenteDigitos(valor)
+
+  // Se vier no padrão internacional do PIX (+55...), exibimos no padrão brasileiro.
+  if (digitos.length > 11 && digitos.startsWith('55')) {
+    digitos = digitos.slice(2)
+  }
+
+  digitos = digitos.slice(0, 11)
 
   if (digitos.length <= 2) return digitos
   if (digitos.length <= 6) return `(${digitos.slice(0, 2)}) ${digitos.slice(2)}`
@@ -385,6 +392,21 @@ function formatarTelefone(valor: string) {
   }
 
   return `(${digitos.slice(0, 2)}) ${digitos.slice(2, 7)}-${digitos.slice(7)}`
+}
+
+function formatarChavePixEntrada(tipo: string, chave: string) {
+  const tipoNormalizado = String(tipo || '').toLowerCase()
+
+  if (tipoNormalizado.includes('cpf')) return formatarCpf(chave)
+  if (tipoNormalizado.includes('celular') || tipoNormalizado.includes('telefone')) {
+    return formatarTelefone(chave)
+  }
+
+  return String(chave || '')
+}
+
+function formatarChavePixExibicao(tipo: string, chave: string) {
+  return formatarChavePixEntrada(tipo, chave)
 }
 
 function funcionarioDoSupabase(registro: FuncionarioSupabase): Funcionario {
@@ -401,7 +423,7 @@ function funcionarioDoSupabase(registro: FuncionarioSupabase): Funcionario {
     diaria: valorDiariaFormatado(registro.daily_rate),
     status: registro.status === 'Inativo' ? 'Inativo' : 'Ativo',
     tipoPix: registro.pix_type || '',
-    chavePix: registro.pix_key || '',
+    chavePix: formatarChavePixExibicao(registro.pix_type || '', registro.pix_key || ''),
     titularPix: registro.pix_holder || '',
     cidadePix: registro.pix_city || '',
     foto: registro.photo_path || '',
@@ -681,8 +703,6 @@ function App() {
 
   const [buscaPonto, setBuscaPonto] = useState('')
   const [statusPontoFiltro, setStatusPontoFiltro] = useState('Todos')
-  const [dataPontoFiltro, setDataPontoFiltro] = useState('')
-
   const dataLocalHoje = (() => {
     const agora = new Date()
     const ano = agora.getFullYear()
@@ -691,6 +711,7 @@ function App() {
     return `${ano}-${mes}-${dia}`
   })()
 
+  const [dataPontoFiltro, setDataPontoFiltro] = useState(dataLocalHoje)
   const [dataOperacao, setDataOperacao] = useState(dataLocalHoje)
 
   const [buscaHistoricoOperacional, setBuscaHistoricoOperacional] = useState('')
@@ -752,13 +773,22 @@ function App() {
     })
 
   const [feriados, setFeriados] = useState<Feriado[]>([])
-  const [mesCalendario, setMesCalendario] = useState(new Date(2026, 7, 1))
+  const [mesCalendario, setMesCalendario] = useState(() => {
+    const hoje = new Date()
+    return new Date(hoje.getFullYear(), hoje.getMonth(), 1)
+  })
   const [novoFeriadoData, setNovoFeriadoData] = useState('')
   const [novoFeriadoNome, setNovoFeriadoNome] = useState('')
   const [novoFeriadoTipo, setNovoFeriadoTipo] =
     useState<TipoFeriado>('Municipal')
   const [mostrarNovoFeriado, setMostrarNovoFeriado] = useState(false)
   const [buscaFeriado, setBuscaFeriado] = useState('')
+
+  useEffect(() => {
+    if (tela !== 'calendario') return
+    const hoje = new Date()
+    setMesCalendario(new Date(hoje.getFullYear(), hoje.getMonth(), 1))
+  }, [tela])
 
   const [estadoTotem, setEstadoTotem] = useState<
     'aguardando' | 'reconhecendo' | 'sucesso' | 'erro'
@@ -1512,49 +1542,107 @@ function App() {
       }
     )
 
-    const hoje = new Date().toLocaleDateString('pt-BR')
+    // Produção 1.9.2: monta pendências a partir da escala real de TODAS as datas
+    // até hoje. Assim, dias anteriores continuam ajustáveis no Controle de Ponto.
+    const { data: listasPonto, error: erroListasPonto } = await supabase
+      .from('work_lists')
+      .select('id, work_date')
+      .lte('work_date', dataLocalHoje)
+      .neq('status', 'Cancelada')
+      .order('work_date', { ascending: false })
 
-    const pendentes: RegistroPonto[] = (empregados || []).flatMap(
-      (empregado): RegistroPonto[] => {
-      const registrosHoje = registrosReais
-        .filter(
-          (registro) =>
-            registro.data === hoje && registro.employeeId === empregado.id
+    if (erroListasPonto) {
+      console.error('Não foi possível consultar as escalas para o ponto:', erroListasPonto)
+    }
+
+    const idsListasPonto = (listasPonto || []).map((lista: any) => lista.id)
+    let membrosEscalados: any[] = []
+
+    if (idsListasPonto.length > 0) {
+      const { data: membros, error: erroMembros } = await supabase
+        .from('work_list_employees')
+        .select('work_list_id, employee_id, status')
+        .in('work_list_id', idsListasPonto)
+        .in('status', ['Escalado', 'Presente'])
+
+      if (erroMembros) {
+        console.error('Não foi possível consultar os diaristas escalados para o ponto:', erroMembros)
+      } else {
+        membrosEscalados = membros || []
+      }
+    }
+
+    const empregadoPorId = new Map(
+      (empregados || []).map((empregado: any) => [empregado.id, empregado])
+    )
+    const listaPorId = new Map(
+      (listasPonto || []).map((lista: any) => [lista.id, lista])
+    )
+
+    // Evita repetir o mesmo funcionário quando houver mais de uma lista na mesma data.
+    const escalasUnicas = new Map<string, { employeeId: string; workDate: string }>()
+
+    membrosEscalados.forEach((membro: any) => {
+      const lista: any = listaPorId.get(membro.work_list_id)
+      if (!lista?.work_date || !membro.employee_id) return
+
+      const chave = `${lista.work_date}|${membro.employee_id}`
+      if (!escalasUnicas.has(chave)) {
+        escalasUnicas.set(chave, {
+          employeeId: membro.employee_id,
+          workDate: lista.work_date,
+        })
+      }
+    })
+
+    const pendentes: RegistroPonto[] = Array.from(escalasUnicas.values()).flatMap(
+      ({ employeeId, workDate }): RegistroPonto[] => {
+        const empregado: any = empregadoPorId.get(employeeId)
+        if (!empregado) return []
+
+        const [ano, mes, dia] = String(workDate).split('-')
+        if (!ano || !mes || !dia) return []
+        const dataBR = `${dia}/${mes}/${ano}`
+
+        const registrosDaData = registrosReais
+          .filter(
+            (registro) =>
+              registro.data === dataBR && registro.employeeId === employeeId
+          )
+          .sort((a, b) => a.horario.localeCompare(b.horario))
+
+        const temEntrada = registrosDaData.some(
+          (registro) => registro.tipoRegistro === 'Entrada'
         )
-        .sort((a, b) => a.horario.localeCompare(b.horario))
+        const temSaida = registrosDaData.some(
+          (registro) => registro.tipoRegistro === 'Saída'
+        )
 
-      const temEntrada = registrosHoje.some(
-        (registro) => registro.tipoRegistro === 'Entrada'
-      )
-      const temSaida = registrosHoje.some(
-        (registro) => registro.tipoRegistro === 'Saída'
-      )
+        if (!temEntrada) {
+          return [{
+            employeeId,
+            nome: empregado.full_name,
+            funcao: empregado.job_title || 'Auxiliar Logístico',
+            data: dataBR,
+            horario: '--:--',
+            status: 'Pendente' as const,
+            tipoRegistro: 'Entrada' as const,
+          }]
+        }
 
-      if (!temEntrada) {
-        return [{
-          employeeId: empregado.id,
-          nome: empregado.full_name,
-          funcao: empregado.job_title || 'Auxiliar Logístico',
-          data: hoje,
-          horario: '--:--',
-          status: 'Pendente' as const,
-          tipoRegistro: 'Entrada' as const,
-        }]
-      }
+        if (!temSaida) {
+          return [{
+            employeeId,
+            nome: empregado.full_name,
+            funcao: empregado.job_title || 'Auxiliar Logístico',
+            data: dataBR,
+            horario: '--:--',
+            status: 'Pendente' as const,
+            tipoRegistro: 'Saída' as const,
+          }]
+        }
 
-      if (!temSaida) {
-        return [{
-          employeeId: empregado.id,
-          nome: empregado.full_name,
-          funcao: empregado.job_title || 'Auxiliar Logístico',
-          data: hoje,
-          horario: '--:--',
-          status: 'Pendente' as const,
-          tipoRegistro: 'Saída' as const,
-        }]
-      }
-
-      return []
+        return []
       }
     )
 
@@ -1580,6 +1668,51 @@ function App() {
       }
     })()
   }, [modoAcesso, usuarioLogado?.id])
+
+  useEffect(() => {
+    if (modoAcesso !== 'admin' || !usuarioLogado) return
+
+    let timerAtualizacao: number | null = null
+
+    const atualizarFinanceiroEmTempoReal = () => {
+      if (timerAtualizacao) {
+        window.clearTimeout(timerAtualizacao)
+      }
+
+      timerAtualizacao = window.setTimeout(() => {
+        void carregarPagamentosSupabase()
+        void carregarFechamentosSupabase()
+      }, 180)
+    }
+
+    const canalFinanceiro = supabase
+      .channel(`financeiro-tempo-real-${usuarioLogado.authId || usuarioLogado.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'payments' },
+        atualizarFinanceiroEmTempoReal
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'closings' },
+        atualizarFinanceiroEmTempoReal
+      )
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.error(
+            'Não foi possível ativar a atualização em tempo real de pagamentos.'
+          )
+        }
+      })
+
+    return () => {
+      if (timerAtualizacao) {
+        window.clearTimeout(timerAtualizacao)
+      }
+
+      void supabase.removeChannel(canalFinanceiro)
+    }
+  }, [modoAcesso, usuarioLogado?.id, usuarioLogado?.authId])
 
   useEffect(() => {
     let ativo = true
@@ -2581,14 +2714,22 @@ function App() {
     diaristas: string[]
   }) {
     const linhasDiaristas = lista.diaristas
-      .map((nome, index) => `${index + 1}. ${nome}`)
-      .join('\n')
+      .map((nome, index) => {
+        const funcionario = obterFuncionarioPorNome(nome)
+        const cpf = funcionario?.cpf?.trim()
+          ? formatarCpf(funcionario.cpf)
+          : 'Não informado'
+        const email = funcionario?.email?.trim() || 'Não informado'
+
+        return `${index + 1} - ${nome}\nCPF: ${cpf}\n${email}`
+      })
+      .join('\n\n')
 
     return [
-      '📋 LISTA DE DIARISTAS',
+      '📋 LISTA DE DIARISTAS • PM',
       `📅 Data: ${formatarDataLista(lista.data)}`,
       lista.local ? `📍 Local: ${lista.local}` : '',
-      lista.horario ? `🕐 Turno: ${lista.horario} às 18:30` : '',
+      lista.horario ? `🕐 Turno PM: ${lista.horario} às 18:30` : '🕐 Turno: PM',
       '',
       `👥 Diaristas (${lista.diaristas.length}):`,
       linhasDiaristas || 'Nenhum diarista selecionado.',
@@ -2656,7 +2797,32 @@ function App() {
       return
     }
 
-    const blob = new Blob([montarTextoLista(dados)], {
+    const linhasDiaristasExportacao = dados.diaristas
+      .map((nome, index) => {
+        const funcionario = obterFuncionarioPorNome(nome)
+        const cpf = funcionario?.cpf?.trim()
+          ? formatarCpf(funcionario.cpf)
+          : 'Não informado'
+        const email = funcionario?.email?.trim() || 'Não informado'
+        return `${index + 1} - ${nome}\nCPF: ${cpf}\n${email}`
+      })
+      .join('\n\n')
+
+    const textoExportacao = [
+      '📋 LISTA DE DIARISTAS • PM',
+      `📅 Data: ${formatarDataLista(dados.data)}`,
+      dados.local ? `📍 Local: ${dados.local}` : '',
+      dados.horario ? `🕐 Turno PM: ${dados.horario} às 18:30` : '🕐 Turno: PM',
+      '',
+      `👥 Diaristas (${dados.diaristas.length}):`,
+      linhasDiaristasExportacao,
+      dados.observacao ? '' : '',
+      dados.observacao ? `📝 Observação: ${dados.observacao}` : '',
+    ]
+      .filter((linha, index, array) => linha !== '' || array[index - 1] !== '')
+      .join('\n')
+
+    const blob = new Blob([textoExportacao], {
       type: 'text/plain;charset=utf-8',
     })
     const url = URL.createObjectURL(blob)
@@ -3094,9 +3260,33 @@ Essa ação não pode ser desfeita.`
           registro.data ===
             new Date(`${dataPontoFiltro}T12:00:00`).toLocaleDateString('pt-BR')
 
-        return combinaBusca && combinaStatus && combinaData
+        const listasDaData = dataPontoFiltro
+          ? listasDiaristas.filter(
+              (lista) => lista.data === dataPontoFiltro
+            )
+          : []
+
+        const nomesEscalados = new Set(
+          listasDaData.flatMap((lista) =>
+            lista.diaristas.filter(
+              (nome) => !(lista.ausentes || []).includes(nome)
+            )
+          )
+        )
+
+        const combinaEscala =
+          !dataPontoFiltro ||
+          (listasDaData.length > 0 && nomesEscalados.has(registro.nome))
+
+        return combinaBusca && combinaStatus && combinaData && combinaEscala
       })
-  }, [registrosPonto, buscaPonto, statusPontoFiltro, dataPontoFiltro])
+  }, [
+    registrosPonto,
+    buscaPonto,
+    statusPontoFiltro,
+    dataPontoFiltro,
+    listasDiaristas,
+  ])
 
   const diariasFiltradas = useMemo(() => {
     const inicio = converterDataInput(dataInicioDiaria)
@@ -3364,7 +3554,7 @@ Essa ação não pode ser desfeita.`
       status: novoFuncionario.status,
       daily_rate: 100,
       pix_type: novoFuncionario.tipoPix.trim() || null,
-      pix_key: novoFuncionario.chavePix.trim() || null,
+      pix_key: normalizarChavePix(novoFuncionario.tipoPix, novoFuncionario.chavePix) || null,
       pix_holder: novoFuncionario.titularPix.trim() || null,
       pix_city: novoFuncionario.cidadePix.trim() || null,
       photo_path: novoFuncionario.foto || null,
@@ -3757,7 +3947,7 @@ Essa ação não pode ser desfeita.`
           .replace(',', '.')
       ) || 100,
       pix_type: dados.tipoPix.trim() || null,
-      pix_key: dados.chavePix.trim() || null,
+      pix_key: normalizarChavePix(dados.tipoPix, dados.chavePix) || null,
       pix_holder: dados.titularPix.trim() || null,
       pix_city: dados.cidadePix.trim() || null,
       photo_path: dados.foto || null,
@@ -3945,6 +4135,85 @@ Essa ação não pode ser desfeita.`
     const iso = dataISO(data)
     return feriados.find((feriado) => feriado.ativo && feriado.data === iso)
   }
+
+  function feriadosNacionaisDoAno(ano: number) {
+    return [
+      { holiday_date: `${ano}-01-01`, name: 'Confraternização Universal' },
+      { holiday_date: `${ano}-04-21`, name: 'Tiradentes' },
+      { holiday_date: `${ano}-05-01`, name: 'Dia Mundial do Trabalho' },
+      { holiday_date: `${ano}-09-07`, name: 'Independência do Brasil' },
+      { holiday_date: `${ano}-10-12`, name: 'Nossa Senhora Aparecida' },
+      { holiday_date: `${ano}-11-02`, name: 'Finados' },
+      { holiday_date: `${ano}-11-15`, name: 'Proclamação da República' },
+      { holiday_date: `${ano}-11-20`, name: 'Dia Nacional de Zumbi e da Consciência Negra' },
+      { holiday_date: `${ano}-12-25`, name: 'Natal' },
+    ]
+  }
+
+  async function sincronizarFeriadosNacionaisAutomaticos() {
+    if (!podeAdministrar) return
+
+    const anoAtual = new Date().getFullYear()
+    const anos = Array.from({ length: 6 }, (_, indice) => anoAtual + indice)
+    const oficiais = anos.flatMap(feriadosNacionaisDoAno)
+
+    const { data: existentes, error: erroConsulta } = await supabase
+      .from('holidays')
+      .select('holiday_date')
+      .in('holiday_date', oficiais.map((feriado) => feriado.holiday_date))
+
+    if (erroConsulta) {
+      console.error('Não foi possível conferir os feriados nacionais:', erroConsulta)
+      return
+    }
+
+    const datasExistentes = new Set(
+      (existentes || []).map((feriado: { holiday_date: string }) => feriado.holiday_date)
+    )
+    const faltantes = oficiais.filter(
+      (feriado) => !datasExistentes.has(feriado.holiday_date)
+    )
+
+    if (!faltantes.length) return
+
+    const { data: authData } = await supabase.auth.getUser()
+    const authId = authData.user?.id ?? usuarioLogado?.authId ?? null
+
+    const { error } = await supabase.from('holidays').insert(
+      faltantes.map((feriado) => ({
+        ...feriado,
+        holiday_type: 'Nacional' as TipoFeriado,
+        active: true,
+        created_by: authId,
+      }))
+    )
+
+    if (error) {
+      console.error('Não foi possível cadastrar automaticamente os feriados nacionais:', error)
+      mostrarNotificacao(
+        `Não foi possível sincronizar os feriados nacionais: ${error.message}`,
+        'error'
+      )
+      return
+    }
+
+    await carregarFeriadosSupabase()
+    await registrarAuditoria(
+      'Feriados nacionais sincronizados',
+      'Calendário',
+      `${faltantes.length} feriado(s) nacional(is) oficial(is) foram incluído(s) automaticamente entre ${anoAtual} e ${anoAtual + 5}.`,
+      'Informação'
+    )
+    mostrarNotificacao(
+      `${faltantes.length} feriado(s) nacional(is) adicionado(s) automaticamente.`,
+      'success'
+    )
+  }
+
+  useEffect(() => {
+    if (modoAcesso !== 'admin' || !usuarioLogado || tela !== 'calendario' || !podeAdministrar) return
+    void sincronizarFeriadosNacionaisAutomaticos()
+  }, [modoAcesso, usuarioLogado?.id, tela, usuarioLogado?.perfil])
 
   async function adicionarFeriado(e: React.FormEvent) {
     e.preventDefault()
@@ -4470,6 +4739,207 @@ Essa ação não pode ser desfeita.`
     }
   }
 
+  async function ajustarTurnoBase(registro: RegistroPonto) {
+    if (usuarioLogado?.perfil === 'Consulta') {
+      mostrarNotificacao(
+        'Seu perfil não possui permissão para ajustar o turno base.',
+        'error'
+      )
+      return
+    }
+
+    const funcionario = funcionarios.find(
+      (item) => item.id === registro.employeeId || item.nome === registro.nome
+    )
+
+    if (!funcionario?.id) {
+      mostrarNotificacao('Funcionário não encontrado para o ajuste.', 'error')
+      return
+    }
+
+    const dataISO = registro.data
+      ? (() => {
+          const [dia, mes, ano] = registro.data.split('/')
+          return dia && mes && ano ? `${ano}-${mes}-${dia}` : dataPontoFiltro
+        })()
+      : dataPontoFiltro
+
+    if (!dataISO) {
+      mostrarNotificacao('Não foi possível identificar a data da escala.', 'error')
+      return
+    }
+
+    const listaDaData = listasDiaristas.find(
+      (lista) =>
+        lista.data === dataISO &&
+        lista.diaristas.some((nome) => nome === funcionario.nome)
+    )
+
+    if (!listaDaData) {
+      mostrarNotificacao(
+        'Esse funcionário não está escalado na Lista do Dia selecionada.',
+        'warning'
+      )
+      return
+    }
+
+    const entradaBase = configuracaoValores.horarioEntradaPadrao || '09:30'
+    const saidaBase = configuracaoValores.horarioSaidaPadrao || '18:30'
+    const entradaEm = new Date(`${dataISO}T${entradaBase}:00-03:00`)
+    const saidaEm = new Date(`${dataISO}T${saidaBase}:00-03:00`)
+
+    if (
+      Number.isNaN(entradaEm.getTime()) ||
+      Number.isNaN(saidaEm.getTime())
+    ) {
+      mostrarNotificacao('Horário base configurado é inválido.', 'error')
+      return
+    }
+
+    if (saidaEm.getTime() > Date.now() + 60_000) {
+      mostrarNotificacao(
+        `O turno base termina às ${saidaBase}. Não é possível lançar uma saída futura.`,
+        'warning'
+      )
+      return
+    }
+
+    const motivoDigitado = window.prompt(
+      `Justificativa para ajustar ${funcionario.nome} para o turno base ${entradaBase}–${saidaBase}:`,
+      'Ajuste administrativo para o horário base do turno.'
+    )
+
+    if (motivoDigitado === null) return
+
+    const motivo = motivoDigitado.trim()
+    if (motivo.length < 8) {
+      mostrarNotificacao(
+        'Informe uma justificativa com pelo menos 8 caracteres.',
+        'warning'
+      )
+      return
+    }
+
+    const confirmou = window.confirm(
+      `Confirmar turno base de ${funcionario.nome}?\n\n` +
+        `Data: ${dataISO.split('-').reverse().join('/')}\n` +
+        `Entrada: ${entradaBase}\n` +
+        `Saída: ${saidaBase}\n\n` +
+        'O sistema incluirá somente os registros que ainda não existirem.'
+    )
+
+    if (!confirmou) return
+
+    setAjustePontoSalvando(true)
+
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const usuarioId = authData.user?.id || null
+      const observacao = `AJUSTE TURNO BASE ${entradaBase}-${saidaBase} — ${motivo}`
+
+      const registrosBase = [
+        { tipo: 'Entrada' as const, ocorridoEm: entradaEm },
+        { tipo: 'Saída' as const, ocorridoEm: saidaEm },
+      ]
+
+      const criados: Array<'Entrada' | 'Saída'> = []
+      const existentes: Array<'Entrada' | 'Saída'> = []
+
+      for (const item of registrosBase) {
+        const inicioMinuto = new Date(item.ocorridoEm)
+        inicioMinuto.setSeconds(0, 0)
+        const fimMinuto = new Date(inicioMinuto.getTime() + 60_000)
+
+        const { data: duplicado, error: erroDuplicado } = await supabase
+          .from('attendance_records')
+          .select('id')
+          .eq('employee_id', funcionario.id)
+          .eq('record_type', item.tipo)
+          .gte('occurred_at', inicioMinuto.toISOString())
+          .lt('occurred_at', fimMinuto.toISOString())
+          .limit(1)
+          .maybeSingle()
+
+        if (erroDuplicado) throw erroDuplicado
+
+        if (duplicado) {
+          existentes.push(item.tipo)
+          continue
+        }
+
+        const { error: erroInsert } = await supabase
+          .from('attendance_records')
+          .insert({
+            employee_id: funcionario.id,
+            occurred_at: item.ocorridoEm.toISOString(),
+            record_type: item.tipo,
+            source: 'Manual',
+            facial_verified: false,
+            facial_confidence: null,
+            terminal_id: null,
+            observation: observacao,
+            created_by: usuarioId,
+          })
+
+        if (erroInsert) throw erroInsert
+        criados.push(item.tipo)
+      }
+
+      const resultadoDiaria = await gerarDiariaDoPontoSupabase(
+        funcionario.id,
+        saidaEm,
+        usuarioId
+      )
+
+      await registrarAuditoria(
+        'Ajuste de turno base',
+        'Controle de Ponto',
+        `Turno base de ${funcionario.nome} ajustado em ${dataISO
+          .split('-')
+          .reverse()
+          .join('/')} para ${entradaBase}-${saidaBase}. Registros criados: ${
+          criados.length ? criados.join(' e ') : 'nenhum (já existentes)'
+        }. Justificativa: ${motivo}`,
+        'Atenção'
+      )
+
+      await carregarPontosSupabase()
+
+      if (resultadoDiaria.erro) {
+        mostrarNotificacao(
+          `Turno base ajustado, mas a diária não pôde ser gerada: ${resultadoDiaria.erro}`,
+          'warning'
+        )
+        return
+      }
+
+      if (criados.length === 0 && existentes.length === 2) {
+        mostrarNotificacao(
+          `Entrada e saída base de ${funcionario.nome} já estavam registradas.`,
+          'warning'
+        )
+        return
+      }
+
+      mostrarNotificacao(
+        `Turno base de ${funcionario.nome} ajustado para ${entradaBase}–${saidaBase}${
+          resultadoDiaria.criada ? ' e diária gerada automaticamente' : ''
+        }.`,
+        'success'
+      )
+    } catch (error: any) {
+      console.error('Não foi possível ajustar o turno base:', error)
+      mostrarNotificacao(
+        `Não foi possível ajustar o turno base: ${
+          error?.message || 'erro desconhecido'
+        }`,
+        'error'
+      )
+    } finally {
+      setAjustePontoSalvando(false)
+    }
+  }
+
   function gerarDiariasDaListaSelecionada() {
     const lista = listaDiaristasSelecionada ?? listasDiaristas[0]
 
@@ -4617,6 +5087,111 @@ Essa ação não pode ser desfeita.`
     )
   }
 
+  function avancarStatusDiaria(index: number) {
+    const diaria = diarias[index]
+    if (!diaria) return
+
+    const ordemStatus: Array<'Pendente' | 'Conferida' | 'Aprovada' | 'Cancelada'> = [
+      'Pendente',
+      'Conferida',
+      'Aprovada',
+      'Cancelada',
+    ]
+
+    const indiceAtual = ordemStatus.indexOf(diaria.status)
+    const proximoStatus = ordemStatus[(indiceAtual + 1) % ordemStatus.length]
+    void alterarStatusDiaria(index, proximoStatus)
+  }
+
+  async function alterarStatusDiaria(index: number, novoStatus: 'Pendente' | 'Conferida' | 'Aprovada' | 'Cancelada') {
+    const diaria = diarias[index]
+    if (!diaria) return
+
+    if (!podeEditar) {
+      mostrarNotificacao('Seu usuário não possui permissão para alterar o status das diárias.', 'warning')
+      return
+    }
+
+    if (!diaria.id) {
+      mostrarNotificacao('Esta diária não possui vínculo com o Supabase.', 'error')
+      return
+    }
+
+    if (diaria.status === novoStatus) return
+
+    const { data: vinculoFechamento, error: erroVinculo } = await supabase
+      .from('closing_daily_records')
+      .select('closing_id')
+      .eq('daily_record_id', diaria.id)
+      .limit(1)
+      .maybeSingle()
+
+    if (erroVinculo) {
+      console.error('Não foi possível verificar o fechamento da diária:', erroVinculo)
+      mostrarNotificacao(`Não foi possível verificar o fechamento: ${erroVinculo.message}`, 'error')
+      return
+    }
+
+    if (vinculoFechamento?.closing_id) {
+      mostrarNotificacao(
+        'Esta diária já está vinculada a um fechamento. O status não pode ser alterado por aqui para preservar o financeiro.',
+        'warning'
+      )
+      return
+    }
+
+    let motivoCancelamento = ''
+    if (novoStatus === 'Cancelada') {
+      const motivo = window.prompt(`Motivo do cancelamento da diária de ${diaria.nome} em ${diaria.data}:`)
+      if (motivo === null) return
+      if (!motivo.trim()) {
+        mostrarNotificacao('Informe o motivo do cancelamento da diária.', 'warning')
+        return
+      }
+      motivoCancelamento = motivo.trim()
+    }
+
+    const confirmou = window.confirm(
+      `Alterar a diária de ${diaria.nome} em ${diaria.data} de ${diaria.status} para ${novoStatus}?`
+    )
+    if (!confirmou) return
+
+    const { data: authData } = await supabase.auth.getUser()
+    const observacaoAnterior = diaria.observacao?.trim()
+    const observacao = novoStatus === 'Cancelada'
+      ? [observacaoAnterior, `Cancelada: ${motivoCancelamento}`].filter(Boolean).join(' | ')
+      : observacaoAnterior || null
+
+    const { error } = await supabase
+      .from('daily_records')
+      .update({
+        status: novoStatus,
+        observation: observacao,
+        updated_by: authData.user?.id || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', diaria.id)
+
+    if (error) {
+      console.error('Não foi possível alterar o status da diária:', error)
+      mostrarNotificacao(`Não foi possível alterar o status: ${error.message}`, 'error')
+      return
+    }
+
+    await registrarAuditoria(
+      'Status da diária alterado',
+      'Diárias',
+      `${diaria.nome} - ${diaria.data}: status alterado de ${diaria.status} para ${novoStatus}${motivoCancelamento ? `. Motivo: ${motivoCancelamento}.` : '.'}`,
+      novoStatus === 'Cancelada' ? 'Atenção' : 'Informação',
+      undefined,
+      'daily_record',
+      diaria.id
+    )
+
+    await carregarDiariasSupabase()
+    mostrarNotificacao(`Status alterado para ${novoStatus}.`, 'success')
+  }
+
   async function aprovarDiaria(index: number) {
     const diaria = diarias[index]
     if (!diaria) return
@@ -4679,7 +5254,7 @@ Essa ação não pode ser desfeita.`
     return resultado
   }
 
-  function resumoAutomaticoFechamento(periodo: string) {
+  function resumoAutomaticoFechamento(periodo: string, dailyRecordIds?: string[]) {
     const datas = extrairPeriodoFechamento(periodo)
 
     if (!datas) {
@@ -4714,13 +5289,19 @@ Essa ação não pode ser desfeita.`
       return data >= datas.inicio && data <= datas.fim
     })
 
-    const diariasPeriodo = diarias.filter((diaria) => noPeriodoBR(diaria.data))
+    // O fechamento financeiro considera exclusivamente diárias APROVADAS.
+    // Quando recebemos os IDs do fechamento, mostramos somente as diárias
+    // efetivamente vinculadas àquela quinzena no Supabase.
+    const idsVinculados = dailyRecordIds ? new Set(dailyRecordIds) : null
+    const diariasPeriodo = diarias.filter(
+      (diaria) =>
+        noPeriodoBR(diaria.data) &&
+        diaria.status === 'Aprovada' &&
+        (!idsVinculados || (!!diaria.id && idsVinculados.has(diaria.id)))
+    )
 
     const nomes = Array.from(
-      new Set([
-        ...listasPeriodo.flatMap((lista) => lista.diaristas),
-        ...diariasPeriodo.map((diaria) => diaria.nome),
-      ])
+      new Set(diariasPeriodo.map((diaria) => diaria.nome))
     ).sort((a, b) => a.localeCompare(b))
 
     const inconsistencias: Array<{
@@ -4822,6 +5403,94 @@ Essa ação não pode ser desfeita.`
     return { funcionarios: funcionariosResumo, inconsistencias, totais }
   }
 
+  async function sincronizarDiariasAprovadasFechamento(
+    fechamento: Fechamento,
+    mostrarMensagem = true
+  ) {
+    if (!fechamento.id || !fechamento.startDate || !fechamento.endDate) {
+      mostrarNotificacao('Fechamento sem vínculo válido com o Supabase.', 'error')
+      return null
+    }
+
+    if (fechamento.status !== 'Em conferência' && fechamento.status !== 'Reaberto') {
+      if (mostrarMensagem) {
+        mostrarNotificacao(
+          'Somente fechamentos em conferência ou reabertos podem receber novas diárias aprovadas.',
+          'warning'
+        )
+      }
+      return fechamento.dailyRecordIds || []
+    }
+
+    const { data: aprovadas, error: erroDiarias } = await supabase
+      .from('daily_records')
+      .select('id, base_amount, additional_amount, transport_amount, meal_amount, total_amount')
+      .gte('work_date', fechamento.startDate)
+      .lte('work_date', fechamento.endDate)
+      .eq('status', 'Aprovada')
+
+    if (erroDiarias) {
+      mostrarNotificacao(`Não foi possível consultar as diárias aprovadas: ${erroDiarias.message}`, 'error')
+      return null
+    }
+
+    const registros = aprovadas || []
+    const idsAprovados = registros.map((item) => item.id)
+    const idsAtuais = new Set(fechamento.dailyRecordIds || [])
+    const novosIds = idsAprovados.filter((id) => !idsAtuais.has(id))
+
+    if (novosIds.length) {
+      const { error: erroVinculos } = await supabase
+        .from('closing_daily_records')
+        .insert(novosIds.map((dailyRecordId) => ({
+          closing_id: fechamento.id,
+          daily_record_id: dailyRecordId,
+        })))
+
+      if (erroVinculos) {
+        mostrarNotificacao(`Não foi possível vincular as novas diárias aprovadas: ${erroVinculos.message}`, 'error')
+        return null
+      }
+    }
+
+    const totalDaily = registros.reduce(
+      (soma, item) => soma + Number(item.base_amount || 0) + Number(item.additional_amount || 0),
+      0
+    )
+    const totalTransport = registros.reduce((soma, item) => soma + Number(item.transport_amount || 0), 0)
+    const totalMeal = registros.reduce((soma, item) => soma + Number(item.meal_amount || 0), 0)
+    const totalAmount = registros.reduce((soma, item) => soma + Number(item.total_amount || 0), 0)
+
+    const { error: erroTotais } = await supabase
+      .from('closings')
+      .update({
+        total_daily: totalDaily,
+        total_transport: totalTransport,
+        total_meal: totalMeal,
+        total_amount: totalAmount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', fechamento.id)
+
+    if (erroTotais) {
+      mostrarNotificacao(`As diárias foram conferidas, mas os totais não puderam ser atualizados: ${erroTotais.message}`, 'error')
+      return null
+    }
+
+    await carregarFechamentosSupabase()
+
+    if (mostrarMensagem) {
+      mostrarNotificacao(
+        novosIds.length
+          ? `${novosIds.length} nova(s) diária(s) aprovada(s) adicionada(s) ao fechamento.`
+          : 'Fechamento já está sincronizado com todas as diárias aprovadas da quinzena.',
+        'success'
+      )
+    }
+
+    return idsAprovados
+  }
+
   async function abrirQuinzenaAtual() {
     const atual = periodoFechamentoPorData()
     const datas = extrairPeriodoFechamento(atual.periodo)
@@ -4835,7 +5504,11 @@ Essa ação não pode ser desfeita.`
     )
     if (existente) {
       setFechamentoSelecionado(fechamentos.indexOf(existente))
-      mostrarNotificacao('Essa quinzena já existe no Supabase.', 'success')
+      if (existente.status === 'Em conferência' || existente.status === 'Reaberto') {
+        await sincronizarDiariasAprovadasFechamento(existente, true)
+      } else {
+        mostrarNotificacao('Essa quinzena já existe no Supabase.', 'success')
+      }
       return
     }
 
@@ -4900,15 +5573,18 @@ Essa ação não pode ser desfeita.`
     const fechamento = fechamentos[index]
     if (!fechamento?.id) return
 
-    const resumo = resumoAutomaticoFechamento(fechamento.periodo)
-    const criticos = resumo.inconsistencias.filter((item) => item.nivel === 'Crítico')
-    if (criticos.length) {
-      mostrarNotificacao(`Corrija ${criticos.length} pendência(s) crítica(s) antes de aprovar.`, 'error')
+    const idsSincronizados = await sincronizarDiariasAprovadasFechamento(fechamento, false)
+    if (idsSincronizados === null) return
+
+    if (!idsSincronizados.length) {
+      mostrarNotificacao('Não há diárias aprovadas para vincular a esse fechamento.', 'warning')
       return
     }
 
-    if (!fechamento.dailyRecordIds?.length) {
-      mostrarNotificacao('Esse fechamento não possui diárias vinculadas.', 'warning')
+    const resumo = resumoAutomaticoFechamento(fechamento.periodo, idsSincronizados)
+    const criticos = resumo.inconsistencias.filter((item) => item.nivel === 'Crítico')
+    if (criticos.length) {
+      mostrarNotificacao(`Corrija ${criticos.length} pendência(s) crítica(s) antes de aprovar.`, 'error')
       return
     }
 
@@ -5928,13 +6604,15 @@ Essa ação não pode ser desfeita.`
       status: 'Em conferência',
     }
 
-  const diariasQuinzenaAtual = diarias.filter(
-    (diaria) =>
-      periodoFechamentoPorData(
-        new Date(`${diaria.data}T12:00:00`)
-      ).periodo === fechamentoAtual.periodo &&
+  const diariasQuinzenaAtual = diarias.filter((diaria) => {
+    const dataDiaria = converterDataBR(diaria.data)
+
+    return (
+      dataDiaria !== null &&
+      periodoFechamentoPorData(dataDiaria).periodo === fechamentoAtual.periodo &&
       diaria.status !== 'Cancelada'
-  )
+    )
+  })
 
   const diariasAprovadasQuinzenaAtual = diariasQuinzenaAtual.filter(
     (diaria) => diaria.status === 'Aprovada'
@@ -5946,6 +6624,11 @@ Essa ação não pode ser desfeita.`
           (diariasAprovadasQuinzenaAtual / diariasQuinzenaAtual.length) * 100
         )
       : 0
+
+  const valorPrevistoQuinzenaAtual = diariasQuinzenaAtual.reduce(
+    (total, diaria) => total + diaria.valor,
+    0
+  )
 
   const funcionarioPixSelecionado = pagamentoPixSelecionado
     ? obterFuncionarioPorNome(pagamentoPixSelecionado.nome)
@@ -6383,14 +7066,14 @@ Essa ação não pode ser desfeita.`
       usuario: perfil.email || '',
       senha: '',
       email: perfil.email || '',
-      celular: perfil.phone || '',
+      celular: formatarTelefone(perfil.phone || ''),
       perfil: perfil.role as PerfilAcesso,
       status: perfil.status as UsuarioSistema['status'],
       ultimoAcesso: perfil.last_access_at
-        ? new Date(perfil.last_access_at).toLocaleString('pt-BR')
+        ? new Date(perfil.last_access_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
         : 'Nunca acessou',
       criadoEm: perfil.created_at
-        ? new Date(perfil.created_at).toLocaleString('pt-BR')
+        ? new Date(perfil.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
         : undefined,
     }))
 
@@ -6432,21 +7115,32 @@ Essa ação não pode ser desfeita.`
       usuario: authUser.email || perfil.email || '',
       senha: '',
       email: perfil.email || authUser.email || '',
-      celular: perfil.phone || '',
+      celular: formatarTelefone(perfil.phone || ''),
       perfil: perfilAcesso,
       status: 'Ativo',
       ultimoAcesso: 'Agora',
     }
 
+    const { data: acessoRegistrado, error: erroUltimoAcesso } = await supabase
+      .rpc('registrar_ultimo_acesso')
+
+    if (erroUltimoAcesso) {
+      console.error('Não foi possível registrar o último acesso:', erroUltimoAcesso)
+    }
+
+    const acessoEfetivo =
+      typeof acessoRegistrado === 'string' && acessoRegistrado
+        ? acessoRegistrado
+        : perfil.last_access_at
+
+    usuarioReal.ultimoAcesso = acessoEfetivo
+      ? new Date(acessoEfetivo).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+      : 'Nunca acessou'
+
     setUsuarioLogado(usuarioReal)
     setErroLogin('')
     setModoAcesso('admin')
     setTela(perfilAcesso === 'Consulta' ? 'dashboard' : 'operacao')
-
-    void supabase
-      .from('profiles')
-      .update({ last_access_at: new Date().toISOString() })
-      .eq('id', authUser.id)
 
     return usuarioReal
   }
@@ -6588,7 +7282,7 @@ Essa ação não pode ser desfeita.`
       body: {
         full_name: novoUsuarioNome.trim(),
         email: novoUsuarioEmail.trim().toLowerCase(),
-        phone: novoUsuarioCelular.trim(),
+        phone: somenteDigitos(novoUsuarioCelular) || null,
         password: novoUsuarioSenha,
         role: novoUsuarioPerfil,
       },
@@ -6673,7 +7367,7 @@ Essa ação não pode ser desfeita.`
     setUsuarioEditandoNome(usuario.nome)
     setUsuarioEditandoLogin(usuario.usuario)
     setUsuarioEditandoEmail(usuario.email || '')
-    setUsuarioEditandoCelular(usuario.celular || '')
+    setUsuarioEditandoCelular(formatarTelefone(usuario.celular || ''))
     setUsuarioEditandoPerfil(usuario.perfil)
     setUsuarioEditandoStatus(usuario.status)
     setUsuarioEditandoNovaSenha('')
@@ -6812,7 +7506,7 @@ Essa ação não pode ser desfeita.`
           user_id: usuarioOriginal.authId,
           full_name: usuarioEditandoNome.trim(),
           email: usuarioEditandoEmail.trim().toLowerCase(),
-          phone: usuarioEditandoCelular.trim(),
+          phone: somenteDigitos(usuarioEditandoCelular) || null,
           role: usuarioEditandoPerfil,
           status: usuarioEditandoStatus,
           password: usuarioEditandoNovaSenha || undefined,
@@ -6858,7 +7552,7 @@ Essa ação não pode ser desfeita.`
               nome: usuarioEditandoNome.trim(),
               usuario: usuarioEditandoEmail.trim().toLowerCase(),
               email: usuarioEditandoEmail.trim().toLowerCase(),
-              celular: usuarioEditandoCelular.trim(),
+              celular: formatarTelefone(usuarioEditandoCelular),
               perfil: usuarioEditandoPerfil,
               status: usuarioEditandoStatus,
             }
@@ -9227,8 +9921,14 @@ Essa ação não pode ser desfeita.`
                 registrosDoDia.some((registro) => registro.nome === nome)
               )
 
-              const ausentes = escalados.filter(
-                (nome) => !presentes.includes(nome)
+              const ausentes = escalados.filter((nome) =>
+                (listaOperacao?.ausentes || []).includes(nome)
+              )
+
+              const pendentesOperacao = escalados.filter(
+                (nome) =>
+                  !presentes.includes(nome) &&
+                  !(listaOperacao?.ausentes || []).includes(nome)
               )
 
               const diariasDoDia = diarias.filter(
@@ -9255,13 +9955,10 @@ Essa ação não pode ser desfeita.`
                 .filter((diaria) => escalados.includes(diaria.nome))
                 .reduce((total, diaria) => total + diaria.valor, 0)
 
-              const hoje = dataLocalHoje
-              const dataJaPassou = dataOperacao < hoje
-
               const statusDiarista = (nome: string) => {
                 if (presentes.includes(nome)) return 'Presente'
-                if (dataJaPassou) return 'Falta'
-                return 'Ainda não registrou'
+                if ((listaOperacao?.ausentes || []).includes(nome)) return 'Falta'
+                return 'Pendente'
               }
 
               const registroDoDiarista = (nome: string) =>
@@ -9500,11 +10197,9 @@ Essa ação não pode ser desfeita.`
                         cor: '#177647',
                       },
                       {
-                        titulo: dataJaPassou ? 'Faltas' : 'Sem registro',
+                        titulo: 'Faltas lançadas',
                         valor: ausentes.length,
-                        detalhe: dataJaPassou
-                          ? 'Não compareceram'
-                          : 'Aguardando ponto',
+                        detalhe: ausentes.length > 0 ? 'Ausência confirmada' : `${pendentesOperacao.length} pendente(s) de ponto`,
                         icone: '!',
                         fundo: '#fff2e5',
                         cor: '#ad641c',
@@ -10034,8 +10729,14 @@ Essa ação não pode ser desfeita.`
                   pontosDoDia.some((registro) => registro.nome === nome)
                 )
 
-                const faltas = lista.diaristas.filter(
-                  (nome) => !presentes.includes(nome)
+                const faltas = lista.diaristas.filter((nome) =>
+                  (lista.ausentes || []).includes(nome)
+                )
+
+                const pendentes = lista.diaristas.filter(
+                  (nome) =>
+                    !presentes.includes(nome) &&
+                    !(lista.ausentes || []).includes(nome)
                 )
 
                 const diariasDaLista = diarias.filter(
@@ -10058,6 +10759,7 @@ Essa ação não pode ser desfeita.`
                   pontosDoDia,
                   presentes,
                   faltas,
+                  pendentes,
                   diariasDaLista,
                   total,
                   aprovadas,
@@ -11070,7 +11772,11 @@ Essa ação não pode ser desfeita.`
                                       marginBottom: '3px',
                                     }}
                                   >
-                                    {presente ? 'Presente' : 'Falta'}
+                                    {presente
+                                      ? 'Presente'
+                                      : (listaSelecionada?.ausentes || []).includes(nome)
+                                        ? 'Falta'
+                                        : 'Pendente'}
                                   </span>
 
                                   <small
@@ -11212,16 +11918,12 @@ Essa ação não pode ser desfeita.`
                 <div className="fortnight-stats">
                   <div>
                     <span>Diárias</span>
-                    <strong>
-                      {diariasDoFechamento(fechamentoAtual.periodo)}
-                    </strong>
+                    <strong>{diariasQuinzenaAtual.length}</strong>
                   </div>
 
                   <div>
                     <span>Valor previsto</span>
-                    <strong>
-                      {moeda(valorDoFechamento(fechamentoAtual.periodo))}
-                    </strong>
+                    <strong>{moeda(valorPrevistoQuinzenaAtual)}</strong>
                   </div>
 
                   <div>
@@ -11443,6 +12145,8 @@ Essa ação não pode ser desfeita.`
                     <label>CPF</label>
                     <input
                       value={novoFuncionario.cpf}
+                      inputMode="numeric"
+                      maxLength={14}
                       onChange={(e) =>
                         setNovoFuncionario({
                           ...novoFuncionario,
@@ -11470,6 +12174,8 @@ Essa ação não pode ser desfeita.`
                     <label>Telefone</label>
                     <input
                       value={novoFuncionario.telefone}
+                      inputMode="tel"
+                      maxLength={15}
                       onChange={(e) =>
                         setNovoFuncionario({
                           ...novoFuncionario,
@@ -11570,6 +12276,10 @@ Essa ação não pode ser desfeita.`
                         setNovoFuncionario({
                           ...novoFuncionario,
                           tipoPix: e.target.value,
+                          chavePix: formatarChavePixEntrada(
+                            e.target.value,
+                            novoFuncionario.chavePix
+                          ),
                         })
                       }
                     >
@@ -11585,10 +12295,15 @@ Essa ação não pode ser desfeita.`
                     <label>Chave PIX</label>
                     <input
                       value={novoFuncionario.chavePix}
+                      inputMode={novoFuncionario.tipoPix === 'Celular' ? 'tel' : novoFuncionario.tipoPix === 'CPF' ? 'numeric' : 'text'}
+                      maxLength={novoFuncionario.tipoPix === 'CPF' ? 14 : novoFuncionario.tipoPix === 'Celular' ? 15 : 120}
                       onChange={(e) =>
                         setNovoFuncionario({
                           ...novoFuncionario,
-                          chavePix: e.target.value,
+                          chavePix: formatarChavePixEntrada(
+                            novoFuncionario.tipoPix,
+                            e.target.value
+                          ),
                         })
                       }
                     />
@@ -12023,6 +12738,8 @@ Essa ação não pode ser desfeita.`
                           <label>CPF</label>
                           <input
                             value={funcionarioEmEdicao.cpf}
+                            inputMode="numeric"
+                            maxLength={14}
                             onChange={(e) =>
                               setFuncionarioEmEdicao({
                                 ...funcionarioEmEdicao,
@@ -12050,6 +12767,8 @@ Essa ação não pode ser desfeita.`
                           <label>Telefone</label>
                           <input
                             value={funcionarioEmEdicao.telefone}
+                            inputMode="tel"
+                            maxLength={15}
                             onChange={(e) =>
                               setFuncionarioEmEdicao({
                                 ...funcionarioEmEdicao,
@@ -12150,6 +12869,10 @@ Essa ação não pode ser desfeita.`
                               setFuncionarioEmEdicao({
                                 ...funcionarioEmEdicao,
                                 tipoPix: e.target.value,
+                                chavePix: formatarChavePixEntrada(
+                                  e.target.value,
+                                  funcionarioEmEdicao.chavePix
+                                ),
                               })
                             }
                           >
@@ -12165,10 +12888,15 @@ Essa ação não pode ser desfeita.`
                           <label>Chave PIX</label>
                           <input
                             value={funcionarioEmEdicao.chavePix}
+                            inputMode={funcionarioEmEdicao.tipoPix === 'Celular' ? 'tel' : funcionarioEmEdicao.tipoPix === 'CPF' ? 'numeric' : 'text'}
+                            maxLength={funcionarioEmEdicao.tipoPix === 'CPF' ? 14 : funcionarioEmEdicao.tipoPix === 'Celular' ? 15 : 120}
                             onChange={(e) =>
                               setFuncionarioEmEdicao({
                                 ...funcionarioEmEdicao,
-                                chavePix: e.target.value,
+                                chavePix: formatarChavePixEntrada(
+                                  funcionarioEmEdicao.tipoPix,
+                                  e.target.value
+                                ),
                               })
                             }
                           />
@@ -13591,14 +14319,31 @@ Essa ação não pode ser desfeita.`
                                 </td>
                                 <td>
                                   {registro.status === 'Pendente' ? (
-                                    <button
-                                      className="action-button"
-                                      onClick={() =>
-                                        abrirAjustePonto(registro)
-                                      }
-                                    >
-                                      Ajustar {registro.tipoRegistro || 'Entrada'}
-                                    </button>
+                                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                      <button
+                                        className="action-button"
+                                        onClick={() =>
+                                          abrirAjustePonto(registro)
+                                        }
+                                      >
+                                        Ajustar {registro.tipoRegistro || 'Entrada'}
+                                      </button>
+                                      {podeEditar && (
+                                        <button
+                                          className="action-button"
+                                          onClick={() => void ajustarTurnoBase(registro)}
+                                          disabled={ajustePontoSalvando}
+                                          title={`Registrar Entrada ${configuracaoValores.horarioEntradaPadrao} e Saída ${configuracaoValores.horarioSaidaPadrao}`}
+                                          style={{
+                                            color: '#5a2776',
+                                            borderColor: '#d9c8e2',
+                                            background: '#faf6fc',
+                                          }}
+                                        >
+                                          Turno base {configuracaoValores.horarioEntradaPadrao}–{configuracaoValores.horarioSaidaPadrao}
+                                        </button>
+                                      )}
+                                    </div>
                                   ) : (
                                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                       <button
@@ -14223,10 +14968,10 @@ Essa ação não pode ser desfeita.`
                     </div>
 
                     <div className="filter-field">
-                      <label>Turno</label>
+                      <label>Turno / período</label>
                       <input
                         type="text"
-                        value="09:30 às 18:30"
+                        value="PM • 09:30 às 18:30"
                         disabled
                         style={{
                           background: '#f7f5f8',
@@ -14525,7 +15270,7 @@ Essa ação não pode ser desfeita.`
                       marginBottom: '14px',
                     }}
                   >
-                    Lista de {formatarDataLista(dataListaDiaristas)}
+                    Lista de {formatarDataLista(dataListaDiaristas)} • PM
                   </strong>
 
                   <div
@@ -14635,6 +15380,16 @@ Essa ação não pode ser desfeita.`
                       📍 {localListaDiaristas}
                     </div>
                   )}
+
+                  <div
+                    style={{
+                      marginTop: '6px',
+                      fontSize: '10px',
+                      opacity: 0.82,
+                    }}
+                  >
+                    🕐 Período PM
+                  </div>
                 </div>
 
                 <div
@@ -15046,7 +15801,7 @@ Essa ação não pode ser desfeita.`
                         cor: '#17804c',
                       },
                       {
-                        titulo: 'Faltaram',
+                        titulo: 'Pendentes de ponto',
                         valor: listaReferencia ? faltaramLista.length : '--',
                         detalhe:
                           faltaramLista.length > 0
@@ -15196,7 +15951,7 @@ Essa ação não pode ser desfeita.`
                           }}
                         >
                           {listaReferencia
-                            ? `${convocados.length} convocado(s), ${presentesLista.length} com ponto e ${faltaramLista.length} sem registro. O sistema gera a diária apenas para quem possui ponto confirmado.`
+                            ? `${convocados.length} convocado(s), ${presentesLista.length} com ponto e ${faltaramLista.length} pendente(s) de registro. O sistema só considera falta quando ela é lançada explicitamente na Lista do Dia.`
                             : 'Salve uma Lista do Dia para cruzar os convocados com os registros de ponto.'}
                         </span>
                       </div>
@@ -15305,7 +16060,7 @@ Essa ação não pode ser desfeita.`
                             marginBottom: '4px',
                           }}
                         >
-                          {faltaramLista.length} convocado(s) sem ponto
+                          {faltaramLista.length} convocado(s) pendente(s) de ponto
                           registrado
                         </strong>
 
@@ -15793,56 +16548,56 @@ Essa ação não pode ser desfeita.`
                                         fontWeight: 750,
                                       }}
                                     >
-                                      {diaria.status === 'Aprovada'
-                                        ? 'Aprovada'
-                                        : diaria.status === 'Cancelada'
-                                        ? 'Cancelada'
-                                        : 'Em conferência'}
+                                      {diaria.status}
                                     </span>
                                   </td>
                                   <td>
                                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                      {diaria.status === 'Pendente' ? (
-                                        <button
-                                          className="action-button"
-                                          onClick={() => aprovarDiaria(indexOriginal)}
-                                          disabled={!podeEditar}
-                                        >
-                                          Aprovar
-                                        </button>
-                                      ) : diaria.status === 'Cancelada' ? (
-                                        <span
-                                          className="registered-text"
-                                          style={{ color: '#a33f49' }}
-                                        >
-                                          Cancelada
-                                        </span>
-                                      ) : (
-                                        <span className="registered-text">Aprovada</span>
-                                      )}
+                                      {(() => {
+                                        const estiloStatus =
+                                          diaria.status === 'Aprovada'
+                                            ? { fundo: '#eaf8ef', borda: '#bfe7ce', cor: '#18794a' }
+                                            : diaria.status === 'Cancelada'
+                                            ? { fundo: '#fff0f1', borda: '#efc7cb', cor: '#a33f49' }
+                                            : diaria.status === 'Conferida'
+                                            ? { fundo: '#eef4ff', borda: '#cbd9f2', cor: '#315b96' }
+                                            : { fundo: '#f6f0f8', borda: '#ddd3e3', cor: '#5a2776' }
 
-                                      {podeAdministrar && diaria.status !== 'Cancelada' && (
-                                        <>
+                                        return (
                                           <button
-                                            className="action-button"
-                                            onClick={() => abrirEdicaoDiaria(indexOriginal)}
-                                            style={{ background: '#fff', border: '1px solid #ddd3e3' }}
-                                          >
-                                            Editar
-                                          </button>
-
-                                          <button
-                                            className="action-button"
-                                            onClick={() => void cancelarDiaria(indexOriginal)}
+                                            type="button"
+                                            disabled={!podeEditar}
+                                            onClick={() => avancarStatusDiaria(indexOriginal)}
+                                            aria-label={`Status atual: ${diaria.status}. Clique para avançar para o próximo status.`}
+                                            title="Clique para avançar: Pendente → Conferida → Aprovada → Cancelada"
                                             style={{
-                                              background: '#fff7f7',
-                                              border: '1px solid #ecc9cd',
-                                              color: '#a33f49',
+                                              minHeight: '32px',
+                                              padding: '0 12px',
+                                              borderRadius: '999px',
+                                              border: `1px solid ${estiloStatus.borda}`,
+                                              background: estiloStatus.fundo,
+                                              color: estiloStatus.cor,
+                                              fontSize: '9px',
+                                              fontWeight: 800,
+                                              cursor: podeEditar ? 'pointer' : 'default',
+                                              opacity: podeEditar ? 1 : 0.55,
+                                              boxShadow: '0 3px 8px rgba(60, 36, 72, .06)',
+                                              whiteSpace: 'nowrap',
                                             }}
                                           >
-                                            Cancelar diária
+                                            {diaria.status} →
                                           </button>
-                                        </>
+                                        )
+                                      })()}
+
+                                      {podeAdministrar && diaria.status !== 'Cancelada' && (
+                                        <button
+                                          className="action-button"
+                                          onClick={() => abrirEdicaoDiaria(indexOriginal)}
+                                          style={{ background: '#fff', border: '1px solid #ddd3e3' }}
+                                        >
+                                          Editar
+                                        </button>
                                       )}
                                     </div>
                                   </td>
@@ -15881,7 +16636,7 @@ Essa ação não pode ser desfeita.`
 
               const selecionado = indice >= 0 ? fechamentos[indice] : undefined
               const resumo = selecionado
-                ? resumoAutomaticoFechamento(selecionado.periodo)
+                ? resumoAutomaticoFechamento(selecionado.periodo, selecionado.dailyRecordIds)
                 : null
               const diasPeriodo = selecionado
                 ? datasDaQuinzena(selecionado.periodo)
@@ -15915,17 +16670,28 @@ Essa ação não pode ser desfeita.`
                         Fechamento da Quinzena
                       </h1>
                       <p className="page-subtitle">
-                        Uma linha por diarista, um campo por dia e resumo de
-                        diárias, VT e VR no final.
+                        Somente diárias aprovadas e vinculadas entram no fechamento,
+                        nos totais da quinzena e no fluxo de pagamento.
                       </p>
                     </div>
 
-                    <button
-                      className="primary-button"
-                      onClick={abrirQuinzenaAtual}
-                    >
-                      + Abrir quinzena atual
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      {selecionado &&
+                        (selecionado.status === 'Em conferência' || selecionado.status === 'Reaberto') && (
+                          <button
+                            className="secondary-button"
+                            onClick={() => void sincronizarDiariasAprovadasFechamento(selecionado)}
+                          >
+                            ↻ Sincronizar aprovadas
+                          </button>
+                        )}
+                      <button
+                        className="primary-button"
+                        onClick={abrirQuinzenaAtual}
+                      >
+                        + Abrir quinzena atual
+                      </button>
+                    </div>
                   </div>
 
                   <div
@@ -15941,7 +16707,7 @@ Essa ação não pode ser desfeita.`
                       {
                         titulo: 'Diárias',
                         valor: resumo?.totais.diarias || 0,
-                        detalhe: 'dias pagos no período',
+                        detalhe: 'somente aprovadas vinculadas',
                       },
                       {
                         titulo: 'VT',
@@ -18104,10 +18870,10 @@ Essa ação não pode ser desfeita.`
                       lineHeight: 1.55,
                     }}
                   >
-                    ⚠ Os feriados nacionais principais de 2026 foram
-                    pré-cadastrados. Feriados estaduais, municipais, pontos
-                    facultativos e datas específicas da empresa podem ser
-                    adicionados pelo administrador.
+                    ✓ Os feriados nacionais oficiais são sincronizados automaticamente
+                    para o ano atual e os próximos 5 anos. Feriados estaduais, municipais,
+                    pontos facultativos e datas específicas da empresa continuam podendo
+                    ser adicionados pelo administrador.
                   </div>
                 </>
               )
@@ -18930,7 +19696,7 @@ Essa ação não pode ser desfeita.`
 
                   <div className="form-group" style={{ marginBottom: '11px' }}>
                     <label>Celular</label>
-                    <input value={novoUsuarioCelular} onChange={(e) => setNovoUsuarioCelular(e.target.value)} placeholder="(19) 99999-9999" />
+                    <input value={novoUsuarioCelular} onChange={(e) => setNovoUsuarioCelular(formatarTelefone(e.target.value))} placeholder="(19) 99999-9999" inputMode="tel" />
                   </div>
 
                   <div className="form-group" style={{ marginBottom: '11px' }}>
@@ -19049,7 +19815,7 @@ Essa ação não pode ser desfeita.`
 
                     <div className="form-group" style={{ marginBottom: '11px' }}>
                       <label>Celular</label>
-                      <input value={usuarioEditandoCelular} onChange={(e) => setUsuarioEditandoCelular(e.target.value)} />
+                      <input value={usuarioEditandoCelular} onChange={(e) => setUsuarioEditandoCelular(formatarTelefone(e.target.value))} placeholder="(19) 99999-9999" inputMode="tel" />
                     </div>
 
                     <div className="form-group" style={{ marginBottom: '11px' }}>
