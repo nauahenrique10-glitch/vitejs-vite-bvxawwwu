@@ -1,0 +1,15 @@
+﻿/* Shared visual foundations for existing operational screens. */
+.app { background: #f6f7fa; font-family: 'Segoe UI', Arial, sans-serif; }
+.sidebar { background: #30213f; }
+.brand-area h1 { color: #fff; }
+.menu button { min-height: 42px; font-size: 12px; }
+.menu button.active { background: #71518e; box-shadow: inset 3px 0 #d8b6f5; }
+.menu-group-title { opacity: .7; }
+.page-title { color: #30213f; letter-spacing: -.8px; }
+.card, .panel { border: 1px solid #e8e5ed; box-shadow: 0 3px 14px #35204604; }
+.primary-button { background: #674582; }
+.access-login { background: #f8f9fc !important; }
+.access-login > div > form label { font-size: 13px !important; }
+.access-login > div > form input { font-size: 16px !important; height: 48px !important; }
+.access-login > div > form button[type='submit'] { font-size: 14px !important; height: 48px !important; background: #352246 !important; }
+@media (min-width: 1000px) { .sidebar { position: sticky; top: 0; height: 100dvh; overflow-y: auto; } .content { padding: 32px 36px; } }

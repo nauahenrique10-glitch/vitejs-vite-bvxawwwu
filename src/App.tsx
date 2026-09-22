@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import AccessHome from './AccessHome'
+import './Refinement.css'
+import AdminShell from './AdminShell'
+import Overview from './Overview'
+import ManagementOverview from './ManagementOverview'
+import './Product.css'
+import './ModulePolish.css'
+import PointSummary from './PointSummary'
+import LivePixPanel from './LivePixPanel'
+import { calculateLivePix } from './livePix'
+import FacialTerminal from './FacialTerminal'
 import { supabase } from './supabase'
 import * as faceapi from 'face-api.js'
 import QRCode from 'qrcode'
@@ -172,6 +183,7 @@ type FechamentoSupabase = {
 }
 
 type Pagamento = {
+  previsaoKey?: string
   id?: string
   employeeId?: string
   closingId?: string
@@ -534,6 +546,11 @@ function gerarPayloadPixEstatico({
 
 function App() {
   const [tela, setTela] = useState<Tela>('dashboard')
+  const [ambiente, setAmbiente] = useState<'gestao' | 'acesso'>('gestao')
+  useEffect(() => {
+    if (tela === 'ponto' || tela === 'auditoria') setAmbiente('acesso')
+    else if (tela !== 'dashboard') setAmbiente('gestao')
+  }, [tela])
 
   const [modoAcesso, setModoAcesso] = useState<
     'inicio' | 'login' | 'admin' | 'totem'
@@ -1682,6 +1699,8 @@ function App() {
       timerAtualizacao = window.setTimeout(() => {
         void carregarPagamentosSupabase()
         void carregarFechamentosSupabase()
+        void carregarDiariasSupabase()
+        void carregarFuncionariosSupabase()
       }, 180)
     }
 
@@ -1697,6 +1716,8 @@ function App() {
         { event: '*', schema: 'public', table: 'closings' },
         atualizarFinanceiroEmTempoReal
       )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_records' }, atualizarFinanceiroEmTempoReal)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, atualizarFinanceiroEmTempoReal)
       .subscribe((status) => {
         if (status === 'CHANNEL_ERROR') {
           console.error(
@@ -1713,6 +1734,23 @@ function App() {
       void supabase.removeChannel(canalFinanceiro)
     }
   }, [modoAcesso, usuarioLogado?.id, usuarioLogado?.authId])
+
+  useEffect(() => {
+    if (modoAcesso !== 'admin' || !usuarioLogado || tela !== 'pagamentos') return
+    const atualizarSaldo = () => {
+      if (document.visibilityState !== 'visible') return
+      void carregarDiariasSupabase()
+      void carregarPagamentosSupabase()
+      void carregarFuncionariosSupabase()
+    }
+    atualizarSaldo()
+    const intervalo = window.setInterval(atualizarSaldo, 30000)
+    window.addEventListener('focus', atualizarSaldo)
+    return () => {
+      window.clearInterval(intervalo)
+      window.removeEventListener('focus', atualizarSaldo)
+    }
+  }, [modoAcesso, usuarioLogado?.id, tela])
 
   useEffect(() => {
     let ativo = true
@@ -2169,15 +2207,6 @@ function App() {
   }
 
 
-  function escaparHtmlExcel(valor: string) {
-    return valor
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;')
-  }
-
   function dataBRParaDate(data: string) {
     const [dia, mes, ano] = data.split('/').map(Number)
     return new Date(ano, mes - 1, dia, 12, 0, 0)
@@ -2216,10 +2245,6 @@ function App() {
     return datas
   }
 
-  function formatarDataBRExcel(data: Date) {
-    return data.toLocaleDateString('pt-BR')
-  }
-
   function nomeArquivoSeguro(texto: string) {
     return texto
       .normalize('NFD')
@@ -2229,377 +2254,31 @@ function App() {
       .toLowerCase()
   }
 
-  function exportarFechamentoExcel(fechamento: Fechamento) {
-    const datas = datasDoPeriodo(fechamento.periodo)
-
-    if (datas.length === 0) {
-      mostrarNotificacao(
-        'Não foi possível identificar as datas desse fechamento.',
-        'warning'
-      )
-      return
+  async function exportarFechamentoExcel(fechamento: Fechamento) {
+    const dates = datasDoPeriodo(fechamento.periodo)
+    if (!dates.length) { mostrarNotificacao('Período de fechamento inválido.', 'warning'); return }
+    try {
+      const { buildClosingWorkbook, approvedClosingRecords } = await import('./closingWorkbook')
+      const input = { ...fechamento, dates, records: diarias }
+      if (!approvedClosingRecords(input).length) {
+        mostrarNotificacao('Não há diárias aprovadas vinculadas a este fechamento para exportar.', 'warning')
+        return
+      }
+      const workbook = buildClosingWorkbook(input)
+      const buffer = await workbook.xlsx.writeBuffer()
+      const url = URL.createObjectURL(new Blob([new Uint8Array(buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `fechamento-${nomeArquivoSeguro(fechamento.periodo)}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      mostrarNotificacao('Planilha Excel exportada com diárias aprovadas, filtros e totais.', 'success')
+    } catch (error) {
+      mostrarNotificacao(`Não foi possível exportar o fechamento: ${error instanceof Error ? error.message : 'erro ao gerar planilha'}`, 'error')
     }
-
-    const intervalo = extrairPeriodoFechamento(fechamento.periodo)
-
-    if (!intervalo) {
-      mostrarNotificacao('Período de fechamento inválido.', 'warning')
-      return
-    }
-
-    const diariasPeriodo = diarias.filter((diaria) => {
-      const data = dataBRParaDate(diaria.data)
-
-      return (
-        data >= intervalo.inicio &&
-        data <= intervalo.fim
-      )
-    })
-
-    if (diariasPeriodo.length === 0) {
-      mostrarNotificacao(
-        'Ainda não existem diárias registradas nesta quinzena para exportar.',
-        'warning'
-      )
-      return
-    }
-
-    const nomes = Array.from(
-      new Set(diariasPeriodo.map((diaria) => diaria.nome))
-    ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
-
-    const locaisPeriodo = Array.from(
-      new Set(
-        listasDiaristas
-          .filter((lista) => {
-            const data = new Date(`${lista.data}T12:00:00`)
-            return (
-              data >= intervalo.inicio &&
-              data <= intervalo.fim &&
-              lista.local.trim()
-            )
-          })
-          .map((lista) => lista.local.trim())
-      )
-    )
-
-    const tituloLocal = 'DHL MOGI MIRIM'
-
-    const moedaExcel = (valor: number) =>
-      valor.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })
-
-    const cabecalhoDias = datas
-      .map((data) => {
-        const diaSemana = data.getDay()
-        const fimSemana = diaSemana === 0 || diaSemana === 6
-        const classe =
-          diaSemana === 0
-            ? 'domingo'
-            : diaSemana === 6
-            ? 'sabado'
-            : ''
-
-        return `<th class="dia ${classe}">
-          <div>${data.getDate()}</div>
-          <small>${fimSemana ? (diaSemana === 6 ? 'SÁB' : 'DOM') : ''}</small>
-        </th>`
-      })
-      .join('')
-
-    const linhas = nomes
-      .map((nome, index) => {
-        const funcionario = obterFuncionarioPorNome(nome)
-        const diariasFuncionario = diariasPeriodo.filter(
-          (diaria) => diaria.nome === nome
-        )
-
-        const celulasDias = datas
-          .map((data) => {
-            const dataBR = formatarDataBRExcel(data)
-            const diaria = diariasFuncionario.find(
-              (item) => item.data === dataBR
-            )
-
-            const diaSemana = data.getDay()
-            const classe =
-              diaSemana === 0
-                ? 'domingo'
-                : diaSemana === 6
-                ? 'sabado'
-                : ''
-
-            if (!diaria) {
-              return `<td class="valor-dia ${classe}"></td>`
-            }
-
-            return `<td class="valor-dia ${classe}">${moedaExcel(
-              diaria.valor
-            )}</td>`
-          })
-          .join('')
-
-        const quantidade = diariasFuncionario.length
-        const totalBase = diariasFuncionario.reduce(
-          (total, diaria) =>
-            total + diaria.diariaBase + diaria.adicional,
-          0
-        )
-        const totalVt = diariasFuncionario.reduce(
-          (total, diaria) => total + diaria.vt,
-          0
-        )
-        const totalVr = diariasFuncionario.reduce(
-          (total, diaria) => total + diaria.vr,
-          0
-        )
-        const totalGeral = diariasFuncionario.reduce(
-          (total, diaria) => total + diaria.valor,
-          0
-        )
-
-        return `
-          <tr>
-            <td class="numero">${index + 1}</td>
-            <td class="nome">
-              ${escaparHtmlExcel(nome)}
-              <small>${escaparHtmlExcel(funcionario?.funcao || '')}</small>
-            </td>
-            ${celulasDias}
-            <td class="quantidade">${quantidade}</td>
-            <td class="dinheiro">${moedaExcel(totalBase)}</td>
-            <td class="dinheiro">${moedaExcel(totalVt)}</td>
-            <td class="dinheiro">${moedaExcel(totalVr)}</td>
-            <td class="dinheiro total">${moedaExcel(totalGeral)}</td>
-          </tr>
-        `
-      })
-      .join('')
-
-    const totalQuantidade = diariasPeriodo.length
-    const totalBasePeriodo = diariasPeriodo.reduce(
-      (total, diaria) => total + diaria.diariaBase + diaria.adicional,
-      0
-    )
-    const totalVtPeriodo = diariasPeriodo.reduce(
-      (total, diaria) => total + diaria.vt,
-      0
-    )
-    const totalVrPeriodo = diariasPeriodo.reduce(
-      (total, diaria) => total + diaria.vr,
-      0
-    )
-    const totalGeralPeriodo = diariasPeriodo.reduce(
-      (total, diaria) => total + diaria.valor,
-      0
-    )
-
-    const totalColunas = 2 + datas.length + 5
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="UTF-8" />
-          <style>
-            body {
-              font-family: Arial, Helvetica, sans-serif;
-              color: #111;
-            }
-
-            table {
-              border-collapse: collapse;
-              width: 100%;
-            }
-
-            th, td {
-              border: 1px solid #333;
-              padding: 5px 6px;
-              font-size: 10pt;
-              vertical-align: middle;
-            }
-
-            .cabecalho-sindicato {
-              font-weight: bold;
-              text-align: center;
-              font-size: 11pt;
-              border: 1px solid #333;
-              padding: 8px;
-            }
-
-            .titulo-quinzena {
-              font-size: 18pt;
-              font-weight: bold;
-              text-align: center;
-              padding: 9px;
-              background: #f4f0f7;
-            }
-
-            .subtitulo {
-              font-size: 9pt;
-              text-align: center;
-              color: #555;
-              padding: 6px;
-            }
-
-            thead th {
-              background: #f3f3f3;
-              font-weight: bold;
-              text-align: center;
-            }
-
-            .dia {
-              min-width: 45px;
-              text-align: center;
-            }
-
-            .dia small {
-              display: block;
-              font-size: 7pt;
-            }
-
-            .sabado {
-              background: #dcecff;
-            }
-
-            .domingo {
-              background: #ffdede;
-            }
-
-            .numero {
-              text-align: center;
-              width: 28px;
-            }
-
-            .nome {
-              min-width: 230px;
-              font-weight: bold;
-            }
-
-            .nome small {
-              display: block;
-              font-size: 8pt;
-              font-weight: normal;
-              color: #555;
-            }
-
-            .valor-dia,
-            .dinheiro {
-              text-align: right;
-              white-space: nowrap;
-            }
-
-            .quantidade {
-              text-align: center;
-              font-weight: bold;
-            }
-
-            .total {
-              font-weight: bold;
-              background: #fff5b8;
-            }
-
-            .linha-total td {
-              font-weight: bold;
-              background: #fff200;
-              border-top: 2px solid #000;
-            }
-
-            .status {
-              text-align: left;
-              padding: 7px;
-              background: #f8f8f8;
-            }
-          </style>
-        </head>
-        <body>
-          <table>
-            <tr>
-              <td colspan="${totalColunas}" class="cabecalho-sindicato">
-                SINDICATO DOS TRABALHADORES NA MOVIMENTAÇÃO DE MERCADORIAS DE LIMEIRA • OPERAÇÃO DHL MOGI MIRIM
-              </td>
-            </tr>
-
-            <tr>
-              <td colspan="${totalColunas}" class="titulo-quinzena">
-                ${escaparHtmlExcel(tituloLocal.toUpperCase())} — ${escaparHtmlExcel(
-                  fechamento.periodo
-                )}
-              </td>
-            </tr>
-
-            <tr>
-              <td colspan="${totalColunas}" class="subtitulo">
-                Fechamento automático gerado pelo sistema • Pagamento previsto: ${escaparHtmlExcel(
-                  fechamento.pagamento
-                )} • Status: ${escaparHtmlExcel(fechamento.status)}
-              </td>
-            </tr>
-
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>NOMES</th>
-                ${cabecalhoDias}
-                <th>DIÁRIAS</th>
-                <th>BASE + ADIC.</th>
-                <th>VT</th>
-                <th>VR</th>
-                <th>TOTAL</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              ${linhas}
-
-              <tr class="linha-total">
-                <td></td>
-                <td>TOTAL DA QUINZENA</td>
-                ${datas.map(() => '<td></td>').join('')}
-                <td class="quantidade">${totalQuantidade}</td>
-                <td class="dinheiro">${moedaExcel(totalBasePeriodo)}</td>
-                <td class="dinheiro">${moedaExcel(totalVtPeriodo)}</td>
-                <td class="dinheiro">${moedaExcel(totalVrPeriodo)}</td>
-                <td class="dinheiro">${moedaExcel(totalGeralPeriodo)}</td>
-              </tr>
-
-              <tr>
-                <td colspan="${totalColunas}" class="status">
-                  Funcionários: ${nomes.length} • Diárias: ${totalQuantidade} • Total geral: R$ ${moedaExcel(
-                    totalGeralPeriodo
-                  )}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </body>
-      </html>
-    `
-
-    const blob = new Blob(['\ufeff', html], {
-      type: 'application/vnd.ms-excel;charset=utf-8;',
-    })
-
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    const periodoArquivo = nomeArquivoSeguro(fechamento.periodo)
-    const localArquivo = nomeArquivoSeguro(tituloLocal)
-
-    link.href = url
-    link.download = `dhl-mogi-mirim-${periodoArquivo}.xls`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
-
-    mostrarNotificacao(
-      `Excel da quinzena ${fechamento.periodo} exportado com sucesso.`,
-      'success'
-    )
   }
-
   function pagamentosDoFechamento(periodo: string) {
     return pagamentos.filter((pagamento) => pagamento.periodo === periodo)
   }
@@ -3260,32 +2939,13 @@ Essa ação não pode ser desfeita.`
           registro.data ===
             new Date(`${dataPontoFiltro}T12:00:00`).toLocaleDateString('pt-BR')
 
-        const listasDaData = dataPontoFiltro
-          ? listasDiaristas.filter(
-              (lista) => lista.data === dataPontoFiltro
-            )
-          : []
-
-        const nomesEscalados = new Set(
-          listasDaData.flatMap((lista) =>
-            lista.diaristas.filter(
-              (nome) => !(lista.ausentes || []).includes(nome)
-            )
-          )
-        )
-
-        const combinaEscala =
-          !dataPontoFiltro ||
-          (listasDaData.length > 0 && nomesEscalados.has(registro.nome))
-
-        return combinaBusca && combinaStatus && combinaData && combinaEscala
+        return combinaBusca && combinaStatus && combinaData
       })
   }, [
     registrosPonto,
     buscaPonto,
     statusPontoFiltro,
     dataPontoFiltro,
-    listasDiaristas,
   ])
 
   const diariasFiltradas = useMemo(() => {
@@ -6630,8 +6290,21 @@ Essa ação não pode ser desfeita.`
     0
   )
 
-  const funcionarioPixSelecionado = pagamentoPixSelecionado
-    ? obterFuncionarioPorNome(pagamentoPixSelecionado.nome)
+  const periodoPixAtual = periodoFechamentoPorData(new Date()).periodo
+  const centralPixAtual = useMemo(() => {
+    const datas = datasDoPeriodo(periodoPixAtual)
+    if (!datas.length) return []
+    return calculateLivePix(funcionarios, diarias, pagamentos, periodoPixAtual, dataISO(datas[0]), dataISO(datas[datas.length - 1]))
+  }, [funcionarios, diarias, pagamentos, periodoPixAtual])
+  const pagamentoPixExibido = pagamentoPixSelecionado?.previsaoKey
+    ? centralPixAtual.find(item => item.previsaoKey === pagamentoPixSelecionado.previsaoKey) || null
+    : pagamentoPixSelecionado
+  const identificadorQrAtual = pagamentoPixExibido ? JSON.stringify([pagamentoPixExibido.pix, pagamentoPixExibido.valorTotal, pagamentoPixExibido.pixTitular, pagamentoPixExibido.pixCidade]) : ''
+  const [identificadorQrGerado, setIdentificadorQrGerado] = useState('')
+  const funcionarioPixSelecionado = pagamentoPixExibido
+    ? (pagamentoPixExibido.employeeId
+        ? funcionarios.find(item => item.id === pagamentoPixExibido.employeeId)
+        : obterFuncionarioPorNome(pagamentoPixExibido.nome))
     : undefined
 
   const [pixCopiaCola, setPixCopiaCola] = useState('')
@@ -6642,29 +6315,30 @@ Essa ação não pode ser desfeita.`
     let cancelado = false
 
     async function gerarQrPixSelecionado() {
+      setIdentificadorQrGerado('')
       setPixCopiaCola('')
       setQrPixDataUrl('')
       setErroQrPix('')
 
-      if (!pagamentoPixSelecionado) return
+      if (!pagamentoPixExibido) return
 
       const titular =
-        pagamentoPixSelecionado.pixTitular ||
+        pagamentoPixExibido.pixTitular ||
         funcionarioPixSelecionado?.titularPix ||
-        pagamentoPixSelecionado.nome
+        pagamentoPixExibido.nome
       const cidade =
-        pagamentoPixSelecionado.pixCidade ||
+        pagamentoPixExibido.pixCidade ||
         funcionarioPixSelecionado?.cidadePix ||
         ''
       const tipoChave = funcionarioPixSelecionado?.tipoPix || ''
 
       try {
         const payload = gerarPayloadPixEstatico({
-          chave: pagamentoPixSelecionado.pix,
+          chave: pagamentoPixExibido.pix,
           tipoChave,
           titular,
           cidade,
-          valor: pagamentoPixSelecionado.valorTotal,
+          valor: pagamentoPixExibido.valorTotal,
         })
 
         const dataUrl = await QRCode.toDataURL(payload, {
@@ -6674,6 +6348,7 @@ Essa ação não pode ser desfeita.`
         })
 
         if (cancelado) return
+        setIdentificadorQrGerado(identificadorQrAtual)
         setPixCopiaCola(payload)
         setQrPixDataUrl(dataUrl)
       } catch (error) {
@@ -6689,7 +6364,7 @@ Essa ação não pode ser desfeita.`
     return () => {
       cancelado = true
     }
-  }, [pagamentoPixSelecionado, funcionarioPixSelecionado])
+  }, [pagamentoPixExibido, funcionarioPixSelecionado, identificadorQrAtual])
 
   const caixaNotificacao = notificacao ? (
     <div className={`notification-toast ${notificacao.tipo}`}>
@@ -7140,7 +6815,7 @@ Essa ação não pode ser desfeita.`
     setUsuarioLogado(usuarioReal)
     setErroLogin('')
     setModoAcesso('admin')
-    setTela(perfilAcesso === 'Consulta' ? 'dashboard' : 'operacao')
+    setTela('dashboard')
 
     return usuarioReal
   }
@@ -7656,277 +7331,15 @@ Essa ação não pode ser desfeita.`
   }
 
   if (modoAcesso === 'inicio') {
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background:
-            'radial-gradient(circle at top left, rgba(104,48,132,.12), transparent 38%), linear-gradient(135deg, #f7f4f8 0%, #ffffff 52%, #f2f7f4 100%)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '28px',
-          boxSizing: 'border-box',
-          fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
-        }}
-      >
-        {caixaNotificacao}
-
-        <div
-          style={{
-            width: '100%',
-            maxWidth: '1040px',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '15px',
-              marginBottom: '28px',
-            }}
-          >
-            <img
-              src="/logo-sindicato.png"
-              alt="Logo do Sindicato dos Trabalhadores na Movimentação de Mercadorias de Limeira"
-              style={{
-                width: '78px',
-                height: '78px',
-                objectFit: 'contain',
-                background: '#ffffff',
-                borderRadius: '20px',
-                padding: '5px',
-                boxSizing: 'border-box',
-                boxShadow: '0 10px 30px rgba(55, 31, 67, .10)',
-              }}
-            />
-
-            <div>
-              <span
-                style={{
-                  display: 'block',
-                  color: '#775f80',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  letterSpacing: '1.1px',
-                  textTransform: 'uppercase',
-                  marginBottom: '4px',
-                }}
-              >
-                Sindicato • Operação DHL Mogi Mirim
-              </span>
-
-              <strong
-                style={{
-                  display: 'block',
-                  color: '#302437',
-                  fontSize: '25px',
-                  lineHeight: 1.05,
-                }}
-              >
-                Gestão de Diaristas
-              </strong>
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: '#ffffff',
-              border: '1px solid #ece5ee',
-              borderRadius: '26px',
-              boxShadow: '0 24px 70px rgba(55,31,67,.10)',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '38px 28px 22px',
-              }}
-            >
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '7px 11px',
-                  borderRadius: '999px',
-                  background: '#f3ecf6',
-                  color: '#69347f',
-                  fontSize: '10px',
-                  fontWeight: 800,
-                  marginBottom: '14px',
-                }}
-              >
-                TURNO • 09:30 ÀS 18:30
-              </span>
-
-              <h1
-                style={{
-                  margin: '0 0 9px',
-                  color: '#302437',
-                  fontSize: '31px',
-                  lineHeight: 1.1,
-                }}
-              >
-                Como deseja acessar?
-              </h1>
-
-              <p
-                style={{
-                  margin: 0,
-                  color: '#8b818e',
-                  fontSize: '13px',
-                  lineHeight: 1.6,
-                }}
-              >
-                A administração e o registro facial funcionam em ambientes
-                separados.
-              </p>
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                gap: '16px',
-                padding: '18px 28px 32px',
-              }}
-            >
-              <button
-                onClick={() => {
-                  setErroLogin('')
-                  setModoAcesso('login')
-                }}
-                style={{
-                  border: '1px solid #e4d7e9',
-                  borderRadius: '20px',
-                  background:
-                    'linear-gradient(145deg, #4c1f64 0%, #6d3488 100%)',
-                  color: '#ffffff',
-                  textAlign: 'left',
-                  padding: '24px',
-                  cursor: 'pointer',
-                  minHeight: '190px',
-                  boxShadow: '0 14px 34px rgba(86,38,108,.18)',
-                }}
-              >
-                <span
-                  style={{
-                    width: '48px',
-                    height: '48px',
-                    borderRadius: '14px',
-                    background: 'rgba(255,255,255,.14)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '21px',
-                    marginBottom: '22px',
-                  }}
-                >
-                  🔐
-                </span>
-
-                <strong
-                  style={{
-                    display: 'block',
-                    fontSize: '20px',
-                    marginBottom: '8px',
-                  }}
-                >
-                  Área Administrativa
-                </strong>
-
-                <span
-                  style={{
-                    display: 'block',
-                    fontSize: '11px',
-                    lineHeight: 1.55,
-                    opacity: 0.78,
-                  }}
-                >
-                  Funcionários, listas, diárias, fechamentos, PIX, documentos e
-                  relatórios.
-                </span>
-              </button>
-
-              <button
-                onClick={() => {
-                  novoRegistroTotem()
-                  setModoAcesso('totem')
-                }}
-                style={{
-                  border: '1px solid #dbece3',
-                  borderRadius: '20px',
-                  background:
-                    'linear-gradient(145deg, #f6fcf8 0%, #ebf8f0 100%)',
-                  color: '#1f5136',
-                  textAlign: 'left',
-                  padding: '24px',
-                  cursor: 'pointer',
-                  minHeight: '190px',
-                }}
-              >
-                <span
-                  style={{
-                    width: '48px',
-                    height: '48px',
-                    borderRadius: '14px',
-                    background: '#dff3e7',
-                    color: '#177647',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '21px',
-                    marginBottom: '22px',
-                  }}
-                >
-                  ◉
-                </span>
-
-                <strong
-                  style={{
-                    display: 'block',
-                    fontSize: '20px',
-                    marginBottom: '8px',
-                  }}
-                >
-                  Registro Facial
-                </strong>
-
-                <span
-                  style={{
-                    display: 'block',
-                    fontSize: '11px',
-                    lineHeight: 1.55,
-                    color: '#5e7d6b',
-                  }}
-                >
-                  Terminal exclusivo para o diarista registrar sua presença,
-                  sem acesso aos dados administrativos.
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div
-            style={{
-              textAlign: 'center',
-              marginTop: '18px',
-              color: '#9a919d',
-              fontSize: '10px',
-            }}
-          >
-            DHL Mogi Mirim • Auxiliares Logísticos • Operação de diaristas
-          </div>
-        </div>
-      </div>
-    )
+    return <>{caixaNotificacao}<AccessHome
+      onAdmin={() => { setAmbiente('gestao'); setErroLogin(''); setModoAcesso('login') }}
+      onAccess={() => { setAmbiente('acesso'); setErroLogin(''); setModoAcesso('login') }}
+      onTerminal={() => { novoRegistroTotem(); setModoAcesso('totem') }}
+    /></>
   }
-
   if (modoAcesso === 'login') {
     return (
-      <div
+      <div className="access-login"
         style={{
           minHeight: '100vh',
           background:
@@ -7941,7 +7354,14 @@ Essa ação não pode ser desfeita.`
       >
         {caixaNotificacao}
 
-        <div
+
+        <section className="auth-story">
+          <span>GESTÃO SINDICAL · ACESSO AO SISTEMA</span>
+          <h1>{ambiente === 'gestao' ? 'Sua equipe. Sua operação. Tudo no lugar.' : 'Acompanhe cada entrada e saída.'}</h1>
+          <p>{ambiente === 'gestao' ? 'Um ambiente dedicado à gestão de diaristas, escalas, diárias e rotinas financeiras.' : 'Um ambiente dedicado ao acompanhamento de acessos e registros de presença.'}</p>
+          <small>DHL Mogi Mirim · Plataforma de operações</small>
+        </section>
+        <div className="auth-card"
           style={{
             width: '100%',
             maxWidth: '430px',
@@ -8020,7 +7440,7 @@ Essa ação não pode ser desfeita.`
                     fontSize: '20px',
                   }}
                 >
-                  Área Administrativa
+                  {ambiente === 'gestao' ? 'Gestão de diaristas' : 'Controle de acesso'}
                 </strong>
               </div>
             </div>
@@ -8174,7 +7594,7 @@ Essa ação não pode ser desfeita.`
                 boxShadow: '0 10px 20px rgba(82,35,105,.16)',
               }}
             >
-              Entrar no painel
+              Acessar meu ambiente
             </button>
 
           </form>
@@ -8253,1033 +7673,42 @@ Essa ação não pode ser desfeita.`
   }
 
   if (modoAcesso === 'totem') {
-    const horaAtualTotem = agoraTotem.toLocaleTimeString('pt-BR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-
-    const dataAtualTotem = agoraTotem.toLocaleDateString('pt-BR', {
-      weekday: 'long',
-      day: '2-digit',
-      month: 'long',
-    })
-
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background:
-            'radial-gradient(circle at top left, rgba(113,67,136,.20), transparent 34%), radial-gradient(circle at bottom right, rgba(38,147,91,.16), transparent 32%), #f6f4f8',
-          color: '#332a36',
-          fontFamily:
-            'Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
-        {caixaNotificacao}
-
-        <header
-          style={{
-            minHeight: '72px',
-            padding: '12px 24px',
-            background: 'rgba(255,255,255,.92)',
-            borderBottom: '1px solid #e9e3eb',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '16px',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              minWidth: 0,
-            }}
-          >
-            <img
-              src="/logo-sindicato.png"
-              alt="Logo do Sindicato"
-              style={{
-                width: '48px',
-                height: '48px',
-                borderRadius: '13px',
-                objectFit: 'contain',
-                background: '#ffffff',
-                border: '1px solid #e8e1eb',
-                padding: '4px',
-                boxSizing: 'border-box',
-              }}
-            />
-
-            <div style={{ minWidth: 0 }}>
-              <strong
-                style={{
-                  display: 'block',
-                  color: '#4e315d',
-                  fontSize: '13px',
-                  lineHeight: 1.25,
-                }}
-              >
-                Registro Facial
-              </strong>
-              <span
-                style={{
-                  display: 'block',
-                  color: '#918695',
-                  fontSize: '9px',
-                  marginTop: '2px',
-                }}
-              >
-                Sindicato • DHL Mogi Mirim
-              </span>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '16px',
-            }}
-          >
-            <div
-              style={{
-                textAlign: 'right',
-              }}
-            >
-              <strong
-                style={{
-                  display: 'block',
-                  color: '#403548',
-                  fontSize: '17px',
-                  letterSpacing: '.02em',
-                }}
-              >
-                {horaAtualTotem}
-              </strong>
-              <span
-                style={{
-                  display: 'block',
-                  color: '#9a919c',
-                  fontSize: '8px',
-                  textTransform: 'capitalize',
-                  marginTop: '1px',
-                }}
-              >
-                {dataAtualTotem}
-              </span>
-            </div>
-
-            <button
-              onClick={() => {
-                novoRegistroTotem()
-                setModoAcesso('inicio')
-              }}
-              style={{
-                minHeight: '36px',
-                padding: '0 13px',
-                borderRadius: '10px',
-                border: '1px solid #e3dce6',
-                background: '#ffffff',
-                color: '#716875',
-                fontSize: '9px',
-                fontWeight: 800,
-                cursor: 'pointer',
-              }}
-            >
-              Sair
-            </button>
-          </div>
-        </header>
-
-        <main
-          style={{
-            flex: 1,
-            width: '100%',
-            maxWidth: '1180px',
-            margin: '0 auto',
-            padding: '26px 22px 22px',
-            boxSizing: 'border-box',
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1.35fr) minmax(280px, .65fr)',
-            gap: '18px',
-            alignItems: 'stretch',
-          }}
-        >
-          <section
-            style={{
-              minHeight: '580px',
-              background: '#ffffff',
-              border: '1px solid #e8e1eb',
-              borderRadius: '26px',
-              boxShadow: '0 20px 55px rgba(68,43,78,.08)',
-              padding: '22px',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              position: 'relative',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '10px',
-                marginBottom: '16px',
-              }}
-            >
-              <div>
-                <span
-                  style={{
-                    display: 'block',
-                    color: '#9a8da0',
-                    fontSize: '8px',
-                    fontWeight: 800,
-                    letterSpacing: '.12em',
-                    marginBottom: '4px',
-                  }}
-                >
-                  TERMINAL FACIAL 02
-                </span>
-                <strong
-                  style={{
-                    display: 'block',
-                    color: '#3d3043',
-                    fontSize: '15px',
-                  }}
-                >
-                  Entrada de funcionários
-                </strong>
-              </div>
-
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 9px',
-                  borderRadius: '999px',
-                  background: '#ebf8f0',
-                  color: '#23764e',
-                  fontSize: '8px',
-                  fontWeight: 850,
-                }}
-              >
-                <span
-                  style={{
-                    width: '7px',
-                    height: '7px',
-                    borderRadius: '50%',
-                    background: '#2da56a',
-                    boxShadow: '0 0 0 4px rgba(45,165,106,.10)',
-                  }}
-                />
-                Terminal online
-              </span>
-            </div>
-
-            <div
-              style={{
-                flex: 1,
-                minHeight: '410px',
-                borderRadius: '22px',
-                background:
-                  estadoTotem === 'sucesso'
-                    ? 'linear-gradient(145deg, #eefaf3, #f8fffb)'
-                    : estadoTotem === 'erro'
-                    ? 'linear-gradient(145deg, #fff3f1, #fffafa)'
-                    : 'linear-gradient(145deg, #18131d, #2b2031)',
-                border:
-                  estadoTotem === 'sucesso'
-                    ? '1px solid #cfe9d9'
-                    : estadoTotem === 'erro'
-                    ? '1px solid #f1d2cc'
-                    : '1px solid #302638',
-                position: 'relative',
-                overflow: 'hidden',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '30px',
-                boxSizing: 'border-box',
-                textAlign: 'center',
-              }}
-            >
-              {(estadoTotem === 'aguardando' ||
-                estadoTotem === 'reconhecendo') && (
-                <>
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background:
-                        'radial-gradient(circle at 50% 42%, rgba(138,92,160,.22), transparent 27%)',
-                    }}
-                  />
-
-                  <div
-                    style={{
-                      position: 'relative',
-                      zIndex: 2,
-                      width: '100%',
-                      maxWidth: '470px',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: '224px',
-                        height: '274px',
-                        margin: '0 auto 24px',
-                        position: 'relative',
-                        borderRadius: '110px 110px 88px 88px',
-                        border:
-                          estadoTotem === 'reconhecendo'
-                            ? '2px solid rgba(114,207,153,.88)'
-                            : '1px solid rgba(255,255,255,.32)',
-                        boxShadow:
-                          estadoTotem === 'reconhecendo'
-                            ? '0 0 0 8px rgba(77,184,123,.07), 0 0 42px rgba(77,184,123,.18)'
-                            : '0 0 0 8px rgba(255,255,255,.025)',
-                      }}
-                    >
-                      <video
-                        ref={videoTotemRef}
-                        muted
-                        playsInline
-                        autoPlay
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover',
-                          borderRadius: 'inherit',
-                          transform: 'scaleX(-1)',
-                          opacity: cameraTotemAtiva ? 1 : 0,
-                        }}
-                      />
-
-                      {[
-                        { top: '-2px', left: '-2px', borderTop: '3px solid #b99ac7', borderLeft: '3px solid #b99ac7' },
-                        { top: '-2px', right: '-2px', borderTop: '3px solid #b99ac7', borderRight: '3px solid #b99ac7' },
-                        { bottom: '-2px', left: '-2px', borderBottom: '3px solid #b99ac7', borderLeft: '3px solid #b99ac7' },
-                        { bottom: '-2px', right: '-2px', borderBottom: '3px solid #b99ac7', borderRight: '3px solid #b99ac7' },
-                      ].map((corner, index) => (
-                        <span
-                          key={index}
-                          style={{
-                            position: 'absolute',
-                            width: '34px',
-                            height: '34px',
-                            borderRadius:
-                              index === 0
-                                ? '13px 0 0 0'
-                                : index === 1
-                                ? '0 13px 0 0'
-                                : index === 2
-                                ? '0 0 0 13px'
-                                : '0 0 13px 0',
-                            ...corner,
-                          }}
-                        />
-                      ))}
-
-                      <div
-                        style={{
-                          position: 'absolute',
-                          display: cameraTotemAtiva ? 'none' : 'block',
-                          left: '50%',
-                          top: '50%',
-                          transform: 'translate(-50%, -50%)',
-                          width: '118px',
-                          height: '154px',
-                          borderRadius: '54% 54% 48% 48%',
-                          background:
-                            'linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.06))',
-                          border: '1px solid rgba(255,255,255,.12)',
-                        }}
-                      >
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: '55px',
-                            left: '27px',
-                            width: '12px',
-                            height: '6px',
-                            borderRadius: '50%',
-                            background: 'rgba(255,255,255,.52)',
-                            boxShadow: '52px 0 0 rgba(255,255,255,.52)',
-                          }}
-                        />
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: '50%',
-                            bottom: '38px',
-                            transform: 'translateX(-50%)',
-                            width: '35px',
-                            height: '12px',
-                            borderBottom: '2px solid rgba(255,255,255,.40)',
-                            borderRadius: '0 0 50% 50%',
-                          }}
-                        />
-                      </div>
-
-                      {estadoTotem === 'reconhecendo' && (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: '10px',
-                            right: '10px',
-                            top: '48%',
-                            height: '2px',
-                            background:
-                              'linear-gradient(90deg, transparent, #65d696, transparent)',
-                            boxShadow: '0 0 16px rgba(101,214,150,.85)',
-                          }}
-                        />
-                      )}
-                    </div>
-
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '6px 9px',
-                        borderRadius: '999px',
-                        background:
-                          estadoTotem === 'reconhecendo'
-                            ? 'rgba(53,184,111,.12)'
-                            : 'rgba(255,255,255,.07)',
-                        color:
-                          estadoTotem === 'reconhecendo'
-                            ? '#92e6b8'
-                            : '#cfc5d3',
-                        fontSize: '8px',
-                        fontWeight: 850,
-                        marginBottom: '11px',
-                      }}
-                    >
-                      {estadoTotem === 'reconhecendo'
-                        ? '● Analisando imagem facial'
-                        : '◉ Câmera pronta'}
-                    </span>
-
-                    <h1
-                      style={{
-                        margin: '0 0 8px',
-                        color: '#ffffff',
-                        fontSize: '24px',
-                        letterSpacing: '-.02em',
-                      }}
-                    >
-                      {estadoTotem === 'reconhecendo'
-                        ? 'Reconhecendo seu rosto...'
-                        : 'Posicione o rosto na câmera'}
-                    </h1>
-
-                    <p
-                      style={{
-                        margin: '0 auto',
-                        maxWidth: '370px',
-                        color: '#b9afbD',
-                        fontSize: '10px',
-                        lineHeight: 1.6,
-                      }}
-                    >
-                      {estadoTotem === 'reconhecendo'
-                        ? 'Mantenha-se parado por alguns segundos enquanto a identificação é processada.'
-                        : 'Olhe de frente, mantenha o rosto dentro da marcação e evite cobrir olhos ou face.'}
-                    </p>
-                  </div>
-                </>
-              )}
-
-              {estadoTotem === 'sucesso' && (
-                <div
-                  style={{
-                    width: '100%',
-                    maxWidth: '460px',
-                    position: 'relative',
-                    zIndex: 2,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: '76px',
-                      height: '76px',
-                      margin: '0 auto 16px',
-                      borderRadius: '50%',
-                      background: '#daf3e4',
-                      color: '#218451',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '34px',
-                      fontWeight: 900,
-                      boxShadow: '0 10px 28px rgba(45,154,94,.13)',
-                    }}
-                  >
-                    ✓
-                  </div>
-
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      padding: '6px 10px',
-                      borderRadius: '999px',
-                      background: '#e6f6ec',
-                      color: '#25764d',
-                      fontSize: '8px',
-                      fontWeight: 900,
-                      letterSpacing: '.07em',
-                      marginBottom: '10px',
-                    }}
-                  >
-                    IDENTIDADE CONFIRMADA
-                  </span>
-
-                  <h1
-                    style={{
-                      margin: '0 0 6px',
-                      color: '#2f4839',
-                      fontSize: '24px',
-                    }}
-                  >
-                    Ponto registrado
-                  </h1>
-
-                  <p
-                    style={{
-                      margin: '0 0 20px',
-                      color: '#789080',
-                      fontSize: '10px',
-                    }}
-                  >
-                    {tipoRegistroTotem ? `${tipoRegistroTotem} registrada com sucesso.` : 'Registro concluído com sucesso.'}
-                  </p>
-
-                  <div
-                    style={{
-                      background: '#ffffff',
-                      border: '1px solid #dcebe1',
-                      borderRadius: '17px',
-                      padding: '16px',
-                      textAlign: 'left',
-                      boxShadow: '0 7px 20px rgba(57,114,78,.05)',
-                    }}
-                  >
-                    <span
-                      style={{
-                        display: 'block',
-                        color: '#9aaca0',
-                        fontSize: '8px',
-                        marginBottom: '4px',
-                      }}
-                    >
-                      FUNCIONÁRIO
-                    </span>
-                    <strong
-                      style={{
-                        display: 'block',
-                        color: '#34483b',
-                        fontSize: '17px',
-                        marginBottom: '13px',
-                      }}
-                    >
-                      {funcionarioReconhecido}
-                    </strong>
-
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr 1fr',
-                        gap: '9px',
-                      }}
-                    >
-                      <div
-                        style={{
-                          background: '#f7fbf8',
-                          borderRadius: '11px',
-                          padding: '10px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'block',
-                            color: '#91a297',
-                            fontSize: '8px',
-                            marginBottom: '3px',
-                          }}
-                        >
-                          DATA
-                        </span>
-                        <strong
-                          style={{
-                            display: 'block',
-                            color: '#425348',
-                            fontSize: '11px',
-                          }}
-                        >
-                          {agoraTotem.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
-                        </strong>
-                      </div>
-
-                      <div
-                        style={{
-                          background: '#f7fbf8',
-                          borderRadius: '11px',
-                          padding: '10px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'block',
-                            color: '#91a297',
-                            fontSize: '8px',
-                            marginBottom: '3px',
-                          }}
-                        >
-                          HORÁRIO
-                        </span>
-                        <strong
-                          style={{
-                            display: 'block',
-                            color: '#425348',
-                            fontSize: '11px',
-                          }}
-                        >
-                          {horarioTotem}
-                        </strong>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={novoRegistroTotem}
-                    style={{
-                      marginTop: '15px',
-                      minHeight: '40px',
-                      padding: '0 18px',
-                      border: 0,
-                      borderRadius: '11px',
-                      background: '#328c5b',
-                      color: '#ffffff',
-                      fontSize: '9px',
-                      fontWeight: 850,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Finalizar agora
-                  </button>
-
-                  <small
-                    style={{
-                      display: 'block',
-                      color: '#96aa9c',
-                      fontSize: '8px',
-                      marginTop: '9px',
-                    }}
-                  >
-                    A tela voltará automaticamente em alguns segundos.
-                  </small>
-                </div>
-              )}
-
-              {estadoTotem === 'erro' && (
-                <div
-                  style={{
-                    width: '100%',
-                    maxWidth: '440px',
-                    position: 'relative',
-                    zIndex: 2,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: '72px',
-                      height: '72px',
-                      margin: '0 auto 16px',
-                      borderRadius: '50%',
-                      background: '#fde2dd',
-                      color: '#b84d3d',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '30px',
-                      fontWeight: 900,
-                    }}
-                  >
-                    !
-                  </div>
-
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      padding: '6px 10px',
-                      borderRadius: '999px',
-                      background: '#fde8e4',
-                      color: '#b05041',
-                      fontSize: '8px',
-                      fontWeight: 900,
-                      marginBottom: '10px',
-                    }}
-                  >
-                    IDENTIFICAÇÃO NÃO CONFIRMADA
-                  </span>
-
-                  <h1
-                    style={{
-                      margin: '0 0 7px',
-                      color: '#66413b',
-                      fontSize: '23px',
-                    }}
-                  >
-                    Tente novamente
-                  </h1>
-
-                  <p
-                    style={{
-                      margin: '0 auto 18px',
-                      maxWidth: '350px',
-                      color: '#97736d',
-                      fontSize: '10px',
-                      lineHeight: 1.55,
-                    }}
-                  >
-                    {mensagemErroTotem}
-                  </p>
-
-                  <button
-                    onClick={novoRegistroTotem}
-                    style={{
-                      minHeight: '40px',
-                      padding: '0 18px',
-                      border: 0,
-                      borderRadius: '11px',
-                      background: '#754783',
-                      color: '#ffffff',
-                      fontSize: '9px',
-                      fontWeight: 850,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Tentar novamente
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {(estadoTotem === 'aguardando' ||
-              estadoTotem === 'reconhecendo') && (
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  gap: '9px',
-                  flexWrap: 'wrap',
-                  marginTop: '16px',
-                }}
-              >
-                <button
-                  onClick={iniciarReconhecimentoFacialTotem}
-                  disabled={estadoTotem === 'reconhecendo'}
-                  style={{
-                    minHeight: '42px',
-                    minWidth: '210px',
-                    padding: '0 18px',
-                    border: 0,
-                    borderRadius: '12px',
-                    background:
-                      estadoTotem === 'reconhecendo'
-                        ? '#998ba0'
-                        : 'linear-gradient(135deg, #724286, #5b356c)',
-                    color: '#ffffff',
-                    fontSize: '9px',
-                    fontWeight: 900,
-                    cursor:
-                      estadoTotem === 'reconhecendo'
-                        ? 'default'
-                        : 'pointer',
-                    boxShadow:
-                      estadoTotem === 'reconhecendo'
-                        ? 'none'
-                        : '0 8px 18px rgba(91,53,108,.18)',
-                  }}
-                >
-                  {estadoTotem === 'reconhecendo'
-                    ? 'Processando identificação...'
-                    : '◉ Abrir câmera e registrar ponto'}
-                </button>
-
-              </div>
-            )}
-          </section>
-
-          <aside
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '14px',
-            }}
-          >
-            <div
-              style={{
-                background: 'linear-gradient(145deg, #684078, #4f315d)',
-                borderRadius: '22px',
-                padding: '20px',
-                color: '#ffffff',
-                boxShadow: '0 16px 36px rgba(69,43,80,.15)',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  color: '#d9c9df',
-                  fontSize: '8px',
-                  fontWeight: 800,
-                  letterSpacing: '.10em',
-                  marginBottom: '6px',
-                }}
-              >
-                OPERAÇÃO ATUAL
-              </span>
-
-              <strong
-                style={{
-                  display: 'block',
-                  fontSize: '18px',
-                  marginBottom: '3px',
-                }}
-              >
-                DHL Mogi Mirim
-              </strong>
-
-              <span
-                style={{
-                  display: 'block',
-                  color: '#d9cfe0',
-                  fontSize: '9px',
-                  marginBottom: '18px',
-                }}
-              >
-                Turno 09:30 às 18:30
-              </span>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '8px',
-                }}
-              >
-                <div
-                  style={{
-                    padding: '11px',
-                    borderRadius: '12px',
-                    background: 'rgba(255,255,255,.08)',
-                  }}
-                >
-                  <span
-                    style={{
-                      display: 'block',
-                      opacity: .68,
-                      fontSize: '8px',
-                      marginBottom: '4px',
-                    }}
-                  >
-                    STATUS
-                  </span>
-                  <strong style={{ fontSize: '10px' }}>Online</strong>
-                </div>
-
-                <div
-                  style={{
-                    padding: '11px',
-                    borderRadius: '12px',
-                    background: 'rgba(255,255,255,.08)',
-                  }}
-                >
-                  <span
-                    style={{
-                      display: 'block',
-                      opacity: .68,
-                      fontSize: '8px',
-                      marginBottom: '4px',
-                    }}
-                  >
-                    MÉTODO
-                  </span>
-                  <strong style={{ fontSize: '10px' }}>Facial</strong>
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                background: '#ffffff',
-                border: '1px solid #e8e1eb',
-                borderRadius: '20px',
-                padding: '18px',
-                boxShadow: '0 10px 28px rgba(68,43,78,.05)',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  color: '#9a8fa0',
-                  fontSize: '8px',
-                  fontWeight: 850,
-                  letterSpacing: '.10em',
-                  marginBottom: '11px',
-                }}
-              >
-                COMO REGISTRAR
-              </span>
-
-              {[
-                ['1', 'Fique de frente para a câmera.'],
-                ['2', 'Mantenha o rosto dentro da marcação.'],
-                ['3', 'Aguarde a confirmação na tela.'],
-              ].map(([numero, texto]) => (
-                <div
-                  key={numero}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    padding: '9px 0',
-                    borderBottom:
-                      numero !== '3' ? '1px solid #f0ecf1' : 'none',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: '25px',
-                      height: '25px',
-                      borderRadius: '8px',
-                      background: '#f2ebf5',
-                      color: '#6d3d7d',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '8px',
-                      fontWeight: 900,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {numero}
-                  </span>
-
-                  <span
-                    style={{
-                      color: '#756b78',
-                      fontSize: '9px',
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    {texto}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div
-              style={{
-                background: '#edf8f1',
-                border: '1px solid #d7ecdf',
-                borderRadius: '18px',
-                padding: '15px',
-              }}
-            >
-              <strong
-                style={{
-                  display: 'block',
-                  color: '#31754d',
-                  fontSize: '10px',
-                  marginBottom: '5px',
-                }}
-              >
-                ✓ Privacidade
-              </strong>
-              <span
-                style={{
-                  display: 'block',
-                  color: '#658172',
-                  fontSize: '8.5px',
-                  lineHeight: 1.55,
-                }}
-              >
-                O terminal exibe apenas as informações necessárias para confirmar
-                o registro de ponto. Dados financeiros e documentos não aparecem
-                nesta tela.
-              </span>
-            </div>
-
-            <div
-              style={{
-                marginTop: 'auto',
-                padding: '0 4px',
-                textAlign: 'center',
-                color: '#aaa1ac',
-                fontSize: '8px',
-                lineHeight: 1.5,
-              }}
-            >
-              O reconhecimento facial depende da integração biométrica habilitada para o terminal.
-            </div>
-          </aside>
-        </main>
-
-        <footer
-          style={{
-            padding: '11px 20px 14px',
-            textAlign: 'center',
-            color: '#aaa1ac',
-            fontSize: '8px',
-          }}
-        >
-          Sistema de Gestão Sindical • Terminal exclusivo para registro de presença
-        </footer>
-
-        <style>{`
-          @media (max-width: 900px) {
-            main {
-              grid-template-columns: 1fr !important;
-            }
-          }
-
-          @media (max-width: 620px) {
-            header {
-              padding-left: 14px !important;
-              padding-right: 14px !important;
-            }
-
-            main {
-              padding: 14px !important;
-            }
-          }
-        `}</style>
-      </div>
-    )
+    return <FacialTerminal
+      state={estadoTotem}
+      cameraActive={cameraTotemAtiva}
+      videoRef={videoTotemRef}
+      clock={agoraTotem.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      date={agoraTotem.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}
+      recordDate={agoraTotem.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+      recordTime={horarioTotem}
+      employee={funcionarioReconhecido}
+      recordType={tipoRegistroTotem || ''}
+      error={mensagemErroTotem}
+      onStart={iniciarReconhecimentoFacialTotem}
+      onReset={novoRegistroTotem}
+      onExit={() => { novoRegistroTotem(); setModoAcesso('inicio') }}
+      notification={caixaNotificacao}
+    />
   }
-
   return (
-    <div
-      className={`app ${
-        usuarioLogado?.perfil === 'Consulta' ? 'modo-consulta' : ''
-      }`}
+    <AdminShell
+      current={tela}
+      workspace={ambiente}
+      onWorkspace={(workspace) => { setAmbiente(workspace); setTela('dashboard') }}
+      userName={usuarioLogado?.nome || 'Usuário'}
+      role={usuarioLogado?.perfil || 'Sem perfil'}
+      canAccess={(screen) => temAcesso(screen as Tela) && (!['fechamentos', 'pagamentos'].includes(screen) || podeAcessarFinanceiro)}
+      onNavigate={(screen) => navegarComPermissao(screen as Tela)}
+      onSignOut={sairAreaAdministrativa}
+      onPassword={() => setMostrarAlterarMinhaSenha(true)}
+      onTerminal={() => { novoRegistroTotem(); setModoAcesso('totem') }}
+      canEdit={podeEditar}
+      savedAt={ultimaSincronizacaoLocal || ''}
+      readOnly={usuarioLogado?.perfil === 'Consulta'}
     >
       {caixaNotificacao}
 
-      {pagamentoPixSelecionado && (
+      {pagamentoPixExibido && (
         <div
           className="pix-modal-backdrop"
           onClick={() => setPagamentoPixSelecionado(null)}
@@ -9304,11 +7733,11 @@ Essa ação não pode ser desfeita.`
 
             <div className="pix-worker-card">
               <div className="pix-avatar">
-                {pagamentoPixSelecionado.nome.charAt(0)}
+                {pagamentoPixExibido.nome.charAt(0)}
               </div>
 
               <div className="pix-worker-main">
-                <strong>{pagamentoPixSelecionado.nome}</strong>
+                <strong>{pagamentoPixExibido.nome}</strong>
 
                 <span>
                   {funcionarioPixSelecionado?.funcao || 'Funcionário'}
@@ -9317,21 +7746,21 @@ Essa ação não pode ser desfeita.`
 
               <span
                 className={
-                  pagamentoPixSelecionado.status === 'Pago'
+                  pagamentoPixExibido.status === 'Pago'
                     ? 'employee-status active-status'
                     : 'employee-status pending-status'
                 }
               >
-                {pagamentoPixSelecionado.status}
+                {pagamentoPixExibido.previsaoKey ? 'Saldo aprovado em apuração' : pagamentoPixExibido.status}
               </span>
             </div>
 
             <div className="pix-payment-highlight">
               <span>Valor do pagamento</span>
-              <strong>{moeda(pagamentoPixSelecionado.valorTotal)}</strong>
+              <strong>{moeda(pagamentoPixExibido.valorTotal)}</strong>
               <small>
-                {pagamentoPixSelecionado.quantidadeDiarias} diária(s) •{' '}
-                {pagamentoPixSelecionado.periodo}
+                {pagamentoPixExibido.quantidadeDiarias} diária(s) •{' '}
+                {pagamentoPixExibido.periodo}
               </small>
             </div>
 
@@ -9347,16 +7776,16 @@ Essa ação não pode ser desfeita.`
                 <div className="pix-data-box">
                   <span>Titular</span>
                   <strong>
-                    {pagamentoPixSelecionado.pixTitular ||
+                    {pagamentoPixExibido.pixTitular ||
                       funcionarioPixSelecionado?.titularPix ||
-                      pagamentoPixSelecionado.nome}
+                      pagamentoPixExibido.nome}
                   </strong>
                 </div>
 
                 <div className="pix-data-box">
                   <span>Cidade do titular</span>
                   <strong>
-                    {pagamentoPixSelecionado.pixCidade ||
+                    {pagamentoPixExibido.pixCidade ||
                       funcionarioPixSelecionado?.cidadePix ||
                       'Não cadastrada'}
                   </strong>
@@ -9365,22 +7794,22 @@ Essa ação não pode ser desfeita.`
                 <div className="pix-key-card">
                   <span>Chave PIX</span>
 
-                  <strong>{pagamentoPixSelecionado.pix}</strong>
+                  <strong>{pagamentoPixExibido.pix}</strong>
 
                   <button
                     className="copy-pix-button"
                     onClick={() =>
-                      copiarChavePix(pagamentoPixSelecionado.pix)
+                      copiarChavePix(pagamentoPixExibido.pix)
                     }
                   >
                     Copiar chave PIX
                   </button>
                 </div>
 
-                {pagamentoPixSelecionado.status === 'Pago' && (
+                {pagamentoPixExibido.status === 'Pago' && (
                   <div className="pix-paid-info">
                     <span>Pagamento confirmado</span>
-                    <strong>{pagamentoPixSelecionado.dataPagamento}</strong>
+                    <strong>{pagamentoPixExibido.dataPagamento}</strong>
                   </div>
                 )}
               </div>
@@ -9388,7 +7817,7 @@ Essa ação não pode ser desfeita.`
               <div className="pix-qr-area">
                 <div className="pix-qr-label">QR CODE PIX</div>
 
-                {qrPixDataUrl ? (
+                {qrPixDataUrl && identificadorQrGerado === identificadorQrAtual ? (
                   <img
                     src={qrPixDataUrl}
                     alt="QR Code PIX para pagamento"
@@ -9429,7 +7858,7 @@ Essa ação não pode ser desfeita.`
                   QR Code PIX estático com o valor exato deste pagamento. Confira os dados no aplicativo do banco antes de concluir.
                 </small>
 
-                {pixCopiaCola && (
+                {pixCopiaCola && identificadorQrGerado === identificadorQrAtual && (
                   <button
                     className="copy-pix-button"
                     onClick={() => copiarPixCopiaCola(pixCopiaCola)}
@@ -9459,7 +7888,7 @@ Essa ação não pode ser desfeita.`
                 Fechar
               </button>
 
-              {pagamentoPixSelecionado.status === 'Aguardando' && (
+              {!pagamentoPixExibido.previsaoKey && pagamentoPixExibido.status === 'Aguardando' && (
                 <button
                   className="payment-confirm-button"
                   onClick={marcarPagamentoSelecionadoComoPago}
@@ -9472,334 +7901,7 @@ Essa ação não pode ser desfeita.`
         </div>
       )}
 
-      <aside className="sidebar">
-        <div className="brand-area">
-          <img
-            src="/logo-sindicato.png"
-            alt="Logo do Sindicato dos Trabalhadores na Movimentação de Mercadorias de Limeira"
-            className="brand-logo"
-            style={{
-              objectFit: 'contain',
-              background: '#ffffff',
-              padding: '4px',
-              boxSizing: 'border-box',
-            }}
-          />
 
-          <div>
-            <h1>Gestão Sindical</h1>
-            <span>DHL Mogi Mirim</span>
-          </div>
-        </div>
-
-        <div
-          style={{
-            margin: '0 5px 16px',
-            padding: '10px',
-            borderRadius: '11px',
-            background: 'rgba(255,255,255,.07)',
-            border: '1px solid rgba(255,255,255,.08)',
-          }}
-        >
-          <span
-            style={{
-              display: 'block',
-              fontSize: '8px',
-              opacity: .55,
-              marginBottom: '3px',
-            }}
-          >
-            USUÁRIO CONECTADO
-          </span>
-          <strong
-            style={{
-              display: 'block',
-              fontSize: '10px',
-              marginBottom: '3px',
-            }}
-          >
-            {usuarioLogado?.nome || 'Usuário'}
-          </strong>
-          <span
-            style={{
-              display: 'inline-flex',
-              padding: '3px 6px',
-              borderRadius: '999px',
-              background: 'rgba(255,255,255,.10)',
-              fontSize: '8px',
-              fontWeight: 800,
-              opacity: .82,
-            }}
-          >
-            {usuarioLogado?.perfil || 'Sem perfil'}
-          </span>
-          <span
-            style={{
-              display: 'block',
-              marginTop: '6px',
-              fontSize: '7px',
-              color: 'rgba(255,255,255,.55)',
-            }}
-          >
-            @{usuarioLogado?.usuario || 'usuario'} · conta ativa
-          </span>
-          <button
-            type="button"
-            onClick={() => setMostrarAlterarMinhaSenha(true)}
-            style={{
-              marginTop: '9px', width: '100%', border: '1px solid rgba(255,255,255,.16)',
-              background: 'rgba(255,255,255,.08)', color: '#fff', borderRadius: '8px',
-              padding: '7px 8px', cursor: 'pointer', fontSize: '8px', fontWeight: 750,
-            }}
-          >
-            Alterar minha senha
-          </button>
-        </div>
-
-        <div className="menu-group-title">GESTÃO</div>
-
-        <div className="menu">
-          {temAcesso('operacao') && (
-            <button
-              className={tela === 'operacao' ? 'active' : ''}
-              onClick={() => navegarComPermissao('operacao')}
-            >
-              <span className="menu-icon">◎</span>
-              Operação do Dia
-            </button>
-          )}
-
-          {temAcesso('historicoOperacional') && (
-            <button
-              className={tela === 'historicoOperacional' ? 'active' : ''}
-              onClick={() => navegarComPermissao('historicoOperacional')}
-            >
-              <span className="menu-icon">◴</span>
-              Histórico Operacional
-            </button>
-          )}
-
-          {temAcesso('dashboard') && (
-            <button
-              className={tela === 'dashboard' ? 'active' : ''}
-              onClick={() => navegarComPermissao('dashboard')}
-            >
-              <span className="menu-icon">▦</span>
-              Dashboard
-            </button>
-          )}
-
-          {temAcesso('funcionarios') && (
-            <button
-              className={tela === 'funcionarios' ? 'active' : ''}
-              onClick={() => navegarComPermissao('funcionarios')}
-            >
-              <span className="menu-icon">♟</span>
-              Funcionários
-            </button>
-          )}
-
-          {temAcesso('ponto') && (
-            <button
-              className={tela === 'ponto' ? 'active' : ''}
-              onClick={() => navegarComPermissao('ponto')}
-            >
-              <span className="menu-icon">◷</span>
-              Controle de Ponto
-            </button>
-          )}
-
-          {temAcesso('listaDiaristas') && (
-            <button
-              className={tela === 'listaDiaristas' ? 'active' : ''}
-              onClick={() => navegarComPermissao('listaDiaristas')}
-            >
-              <span className="menu-icon">☷</span>
-              Lista do Dia
-            </button>
-          )}
-
-          {temAcesso('diarias') && (
-            <button
-              className={tela === 'diarias' ? 'active' : ''}
-              onClick={() => navegarComPermissao('diarias')}
-            >
-              <span className="menu-icon">R$</span>
-              Diárias
-            </button>
-          )}
-        </div>
-
-        {podeAcessarFinanceiro && (
-          <>
-            <div className="menu-group-title">FINANCEIRO</div>
-
-            <div className="menu">
-              <button
-                className={tela === 'fechamentos' ? 'active' : ''}
-                onClick={() => navegarComPermissao('fechamentos')}
-              >
-                <span className="menu-icon">✓</span>
-                Fechamentos
-              </button>
-
-              <button
-                className={tela === 'pagamentos' ? 'active' : ''}
-                onClick={() => navegarComPermissao('pagamentos')}
-              >
-                <span className="menu-icon">◆</span>
-                Pagamentos
-              </button>
-            </div>
-          </>
-        )}
-
-        <div className="menu-group-title">ADMINISTRAÇÃO</div>
-
-        <div className="menu">
-          {temAcesso('documentos') && (
-            <button
-              className={tela === 'documentos' ? 'active' : ''}
-              onClick={() => navegarComPermissao('documentos')}
-            >
-              <span className="menu-icon">▤</span>
-              Documentos
-            </button>
-          )}
-
-          {temAcesso('relatorios') && (
-            <button
-              className={tela === 'relatorios' ? 'active' : ''}
-              onClick={() => navegarComPermissao('relatorios')}
-            >
-              <span className="menu-icon">▥</span>
-              Relatórios
-            </button>
-          )}
-
-          {temAcesso('calendario') && (
-            <button
-              className={tela === 'calendario' ? 'active' : ''}
-              onClick={() => navegarComPermissao('calendario')}
-            >
-              <span className="menu-icon">▣</span>
-              Calendário
-            </button>
-          )}
-
-          {temAcesso('configuracoes') && (
-            <button
-              className={tela === 'configuracoes' ? 'active' : ''}
-              onClick={() => navegarComPermissao('configuracoes')}
-            >
-              <span className="menu-icon">⚙</span>
-              Configurações
-            </button>
-          )}
-
-          {temAcesso('usuarios') && (
-            <button
-              className={tela === 'usuarios' ? 'active' : ''}
-              onClick={() => navegarComPermissao('usuarios')}
-            >
-              <span className="menu-icon">⚿</span>
-              Usuários
-            </button>
-          )}
-
-          {temAcesso('auditoria') && (
-            <button
-              className={tela === 'auditoria' ? 'active' : ''}
-              onClick={() => navegarComPermissao('auditoria')}
-            >
-              <span className="menu-icon">⌕</span>
-              Auditoria
-            </button>
-          )}
-        </div>
-
-        <div
-          style={{
-            margin: '12px 5px 4px',
-            padding: '9px 10px',
-            borderRadius: '10px',
-            background: 'rgba(255,255,255,.06)',
-            border: '1px solid rgba(255,255,255,.07)',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              marginBottom: '3px',
-            }}
-          >
-            <span
-              style={{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                background: '#67d59a',
-                boxShadow: '0 0 0 3px rgba(103,213,154,.10)',
-              }}
-            />
-            <strong
-              style={{
-                fontSize: '8px',
-                color: 'rgba(255,255,255,.84)',
-              }}
-            >
-              Salvamento automático
-            </strong>
-          </div>
-
-          <span
-            style={{
-              display: 'block',
-              fontSize: '7px',
-              color: 'rgba(255,255,255,.46)',
-              lineHeight: 1.4,
-            }}
-          >
-            {ultimaSincronizacaoLocal
-              ? `Último salvamento: ${ultimaSincronizacaoLocal}`
-              : 'Dados protegidos neste navegador'}
-          </span>
-        </div>
-
-        <div className="totem-menu-area">
-          {podeEditar && (
-            <button
-              className="totem-menu-button"
-              onClick={() => {
-                novoRegistroTotem()
-                setModoAcesso('totem')
-              }}
-            >
-              ◉ Abrir Totem de Ponto
-            </button>
-          )}
-
-          <button
-            onClick={sairAreaAdministrativa}
-            style={{
-              width: '100%',
-              marginTop: '8px',
-              padding: '10px 12px',
-              borderRadius: '10px',
-              border: '1px solid rgba(255,255,255,.12)',
-              background: 'rgba(255,255,255,.06)',
-              color: 'rgba(255,255,255,.72)',
-              fontSize: '10px',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            Sair da conta
-          </button>
-        </div>
-      </aside>
 
       <main className="content">
         <style>{`
@@ -11835,249 +9937,23 @@ Essa ação não pode ser desfeita.`
         )}
 
         {tela === 'dashboard' && temAcesso('dashboard') && (
-          <>
-            <div className="dashboard-header">
-              <div>
-                <span className="dashboard-kicker">VISÃO GERAL</span>
-
-                <h1 className="page-title">Dashboard</h1>
-
-                <p className="page-subtitle">
-                  Acompanhe a operação, os pontos e os pagamentos.
-                </p>
-              </div>
-
-              <div className="dashboard-date">
-                <span>Período atual</span>
-                <strong>16 a 31 de agosto</strong>
-              </div>
-            </div>
-
-            <div className="dashboard-cards">
-              <div className="dashboard-card">
-                <div className="dashboard-card-icon purple">♟</div>
-                <div>
-                  <span>Funcionários ativos</span>
-                  <strong>{funcionariosAtivos}</strong>
-                  <small>Trabalhadores cadastrados</small>
-                </div>
-              </div>
-
-              <div className="dashboard-card">
-                <div className="dashboard-card-icon green">✓</div>
-                <div>
-                  <span>Pontos registrados</span>
-                  <strong>{totalRegistrados}</strong>
-                  <small>{totalPendentes} pendente(s)</small>
-                </div>
-              </div>
-
-              <div className="dashboard-card">
-                <div className="dashboard-card-icon yellow">◷</div>
-                <div>
-                  <span>Diárias pendentes</span>
-                  <strong>{totalDiariasPendentes}</strong>
-                  <small>{moeda(valorDiariasPendentes)}</small>
-                </div>
-              </div>
-
-              <div className="dashboard-card">
-                <div className="dashboard-card-icon blue">R$</div>
-                <div>
-                  <span>Aguardando pagamento</span>
-                  <strong>{pagamentosPendentes}</strong>
-                  <small>{moeda(valorPendentePagamentos)}</small>
-                </div>
-              </div>
-            </div>
-
-            <div className="dashboard-main-grid">
-              <div className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-label">QUINZENA ATUAL</span>
-                    <h2>{fechamentoAtual.periodo}</h2>
-                  </div>
-
-                  <span className="closing-status em-revisao">
-                    {fechamentoAtual.status}
-                  </span>
-                </div>
-
-                <div className="fortnight-progress">
-                  <div className="progress-top">
-                    <span>Andamento do fechamento</span>
-                    <strong>{andamentoFechamento}%</strong>
-                  </div>
-
-                  <div className="progress-track">
-                    <div className="progress-fill" style={{ width: `${andamentoFechamento}%` }} />
-                  </div>
-                </div>
-
-                <div className="fortnight-stats">
-                  <div>
-                    <span>Diárias</span>
-                    <strong>{diariasQuinzenaAtual.length}</strong>
-                  </div>
-
-                  <div>
-                    <span>Valor previsto</span>
-                    <strong>{moeda(valorPrevistoQuinzenaAtual)}</strong>
-                  </div>
-
-                  <div>
-                    <span>Próximo pagamento</span>
-                    <strong>{fechamentoAtual.pagamento}</strong>
-                  </div>
-                </div>
-
-                <button
-                  className="dashboard-link-button"
-                  onClick={() => setTela('fechamentos')}
-                >
-                  Ver fechamento completo →
-                </button>
-              </div>
-
-              <div className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-label">ATENÇÃO</span>
-                    <h2>Pendências</h2>
-                  </div>
-
-                  <span className="pending-number">
-                    {totalPendentes +
-                      totalDiariasPendentes +
-                      pagamentosPendentes}
-                  </span>
-                </div>
-
-                <button
-                  className="pending-item"
-                  onClick={() => setTela('ponto')}
-                >
-                  <span className="pending-dot yellow" />
-                  <div>
-                    <strong>{totalPendentes} ponto(s) pendente(s)</strong>
-                    <small>Trabalhadores sem registro</small>
-                  </div>
-                  <span>›</span>
-                </button>
-
-                <button
-                  className="pending-item"
-                  onClick={() => setTela('diarias')}
-                >
-                  <span className="pending-dot purple" />
-                  <div>
-                    <strong>
-                      {totalDiariasPendentes} diária(s) para aprovar
-                    </strong>
-                    <small>Aguardando conferência</small>
-                  </div>
-                  <span>›</span>
-                </button>
-
-                <button
-                  className="pending-item"
-                  onClick={() => setTela('pagamentos')}
-                >
-                  <span className="pending-dot green" />
-                  <div>
-                    <strong>
-                      {pagamentosPendentes} pagamento(s) pendente(s)
-                    </strong>
-                    <small>Aguardando confirmação</small>
-                  </div>
-                  <span>›</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="dashboard-bottom-grid">
-              <div className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-label">ACESSO RÁPIDO</span>
-                    <h2>Ações rápidas</h2>
-                  </div>
-                </div>
-
-                <div className="quick-actions">
-                  <button
-                    onClick={() => {
-                      setTela('funcionarios')
-                      setMostrarFormulario(true)
-                    }}
-                  >
-                    <span className="quick-icon">＋</span>
-                    <div>
-                      <strong>Novo funcionário</strong>
-                      <small>Realizar cadastro</small>
-                    </div>
-                  </button>
-
-                  <button onClick={() => setModoAcesso('totem')}>
-                    <span className="quick-icon">◉</span>
-                    <div>
-                      <strong>Abrir Totem</strong>
-                      <small>Registrar ponto</small>
-                    </div>
-                  </button>
-
-                  <button onClick={() => setTela('diarias')}>
-                    <span className="quick-icon">R$</span>
-                    <div>
-                      <strong>Ver diárias</strong>
-                      <small>Conferir registros</small>
-                    </div>
-                  </button>
-
-                  <button onClick={() => setTela('pagamentos')}>
-                    <span className="quick-icon">◆</span>
-                    <div>
-                      <strong>Pagamentos</strong>
-                      <small>Consultar PIX</small>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <span className="section-label">HOJE</span>
-                    <h2>Atividade recente</h2>
-                  </div>
-                </div>
-
-                <div className="activity-list">
-                  {registrosPonto
-                    .filter((registro) => registro.status === 'Registrado')
-                    .map((registro, index) => (
-                      <div className="activity-item" key={index}>
-                        <div className="activity-time">{registro.horario}</div>
-
-                        <div className="activity-line">
-                          <span className="activity-circle green" />
-
-                          <div>
-                            <strong>{registro.nome}</strong>
-                            <small>registrou o ponto</small>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            </div>
-          </>
+          ambiente === 'acesso' ? <Overview
+            name={usuarioLogado?.nome || 'Usuário'} employees={funcionarios} records={registrosPonto}
+            canAccess={(screen) => ['ponto', 'auditoria'].includes(screen) && temAcesso(screen as Tela)}
+            canEdit={podeEditar} onNavigate={(screen) => navegarComPermissao(screen as Tela)}
+            onTerminal={() => { novoRegistroTotem(); setModoAcesso('totem') }}
+          /> : <ManagementOverview
+            name={usuarioLogado?.nome || 'Usuário'} active={funcionariosAtivos}
+            dailyPending={totalDiariasPendentes} dailyValue={moeda(valorDiariasPendentes)}
+            paymentsPending={pagamentosPendentes} paymentsValue={moeda(valorPendentePagamentos)}
+            closing={fechamentoAtual} dailyCount={diariasQuinzenaAtual.length}
+            forecast={moeda(valorPrevistoQuinzenaAtual)} progress={andamentoFechamento}
+            canAccess={(screen) => temAcesso(screen as Tela)}
+            onNavigate={(screen) => navegarComPermissao(screen as Tela)} lists={listasDiaristas}
+          />
         )}
-
         {tela === 'funcionarios' && temAcesso('funcionarios') && (
-          <>
+          <section className="module-page module-funcionarios">
             <div className="page-header">
               <div>
                 <h1 className="page-title">Funcionários</h1>
@@ -12428,7 +10304,7 @@ Essa ação não pode ser desfeita.`
               }
 
               return (
-                <div
+                <div className="worker-profile"
                   style={{
                     marginBottom: '24px',
                     borderRadius: '24px',
@@ -12438,7 +10314,7 @@ Essa ação não pode ser desfeita.`
                     boxShadow: '0 14px 40px rgba(55, 28, 70, 0.10)',
                   }}
                 >
-                  <div
+                  <div className="worker-profile-hero"
                     style={{
                       padding: '26px 28px',
                       background:
@@ -13003,7 +10879,7 @@ Essa ação não pode ser desfeita.`
                     ))}
                   </div>
 
-                  <div
+                  <div className="worker-profile-tabs" aria-label="Seções da ficha"
                     style={{
                       padding: '20px 22px 0',
                       display: 'flex',
@@ -13026,7 +10902,7 @@ Essa ação não pode ser desfeita.`
                       ],
                     ].map(([id, titulo]) => (
                       <button
-                        key={id}
+                        key={id} aria-pressed={abaFichaFuncionario === id}
                         onClick={() =>
                           setAbaFichaFuncionario(
                             id as
@@ -13849,242 +11725,18 @@ Essa ação não pode ser desfeita.`
                 </table>
               </div>
             </div>
-          </>
+          </section>
         )}
 
         {tela === 'ponto' && temAcesso('ponto') && (
-          <>
+          <section className="module-page module-ponto">
             {(() => {
-              const registrosFaciais = registrosPonto.filter(
-                (registro) =>
-                  registro.status === 'Registrado' &&
-                  registro.metodo !== 'Manual'
-              ).length
-
-              const ultimoRegistro = [...registrosPonto]
-                .filter((registro) => registro.status === 'Registrado')
-                .reverse()[0]
-
-              const pontoCard = {
-                background: '#ffffff',
-                border: '1px solid #ebe5ed',
-                borderRadius: '18px',
-                padding: '19px',
-                boxShadow: '0 8px 22px rgba(60, 36, 72, 0.055)',
-              }
-
               return (
                 <>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-end',
-                      justifyContent: 'space-between',
-                      gap: '20px',
-                      marginBottom: '24px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <div>
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '7px',
-                          color: '#6b3c83',
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          letterSpacing: '1.15px',
-                          textTransform: 'uppercase',
-                          marginBottom: '7px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: '7px',
-                            height: '7px',
-                            borderRadius: '50%',
-                            background: '#6b3c83',
-                          }}
-                        />
-                        Central operacional
-                      </span>
-
-                      <h1
-                        className="page-title"
-                        style={{ marginBottom: '7px', color: '#2f2435' }}
-                      >
-                        Controle de Ponto
-                      </h1>
-
-                      <p className="page-subtitle">
-                        Acompanhe presença, registros faciais e pendências em tempo real.
-                      </p>
-                    </div>
-
-                    <div
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '9px',
-                        padding: '11px 14px',
-                        borderRadius: '12px',
-                        background: '#ecfdf3',
-                        border: '1px solid #c8efd9',
-                        color: '#18784a',
-                        fontSize: '11px',
-                        fontWeight: 750,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          background: '#2fb66d',
-                          boxShadow: '0 0 0 4px rgba(47,182,109,.11)',
-                        }}
-                      />
-                      Totem online
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(205px, 1fr))',
-                      gap: '14px',
-                      marginBottom: '18px',
-                    }}
-                  >
-                    {[
-                      {
-                        titulo: 'Presentes hoje',
-                        valor: totalRegistrados,
-                        detalhe: `${registrosPonto.length} trabalhadores previstos`,
-                        icone: '✓',
-                        fundo: '#e9f8ef',
-                        cor: '#17804c',
-                      },
-                      {
-                        titulo: 'Ainda não registraram',
-                        valor: totalPendentes,
-                        detalhe:
-                          totalPendentes === 0
-                            ? 'Nenhuma pendência'
-                            : 'Aguardando registro de entrada',
-                        icone: '◷',
-                        fundo: '#fff5dc',
-                        cor: '#a86d00',
-                      },
-                      {
-                        titulo: 'Registros faciais',
-                        valor: registrosFaciais,
-                        detalhe: 'Reconhecimento facial',
-                        icone: '◉',
-                        fundo: '#f1e9f5',
-                        cor: '#5a2776',
-                      },
-                      {
-                        titulo: 'Último registro',
-                        valor: ultimoRegistro?.horario || '--:--',
-                        detalhe: ultimoRegistro?.nome || 'Nenhum registro',
-                        icone: '↗',
-                        fundo: '#eaf1ff',
-                        cor: '#285dc2',
-                      },
-                    ].map((card) => (
-                      <div key={card.titulo} style={pontoCard}>
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'flex-start',
-                            justifyContent: 'space-between',
-                            gap: '14px',
-                          }}
-                        >
-                          <div>
-                            <span
-                              style={{
-                                display: 'block',
-                                color: '#766d7a',
-                                fontSize: '12px',
-                                fontWeight: 650,
-                                marginBottom: '8px',
-                              }}
-                            >
-                              {card.titulo}
-                            </span>
-
-                            <strong
-                              style={{
-                                display: 'block',
-                                color: '#302437',
-                                fontSize: '29px',
-                                lineHeight: 1,
-                                fontWeight: 800,
-                                letterSpacing: '-0.65px',
-                                marginBottom: '9px',
-                              }}
-                            >
-                              {card.valor}
-                            </strong>
-
-                            <small
-                              style={{
-                                display: 'block',
-                                color: '#948b98',
-                                fontSize: '11px',
-                                lineHeight: 1.4,
-                              }}
-                            >
-                              {card.detalhe}
-                            </small>
-                          </div>
-
-                          <span
-                            style={{
-                              width: '40px',
-                              height: '40px',
-                              minWidth: '40px',
-                              borderRadius: '12px',
-                              background: card.fundo,
-                              color: card.cor,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '15px',
-                              fontWeight: 800,
-                            }}
-                          >
-                            {card.icone}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div
-                    style={{
-                      background: '#ffffff',
-                      border: '1px solid #ebe5ed',
-                      borderRadius: '18px',
-                      padding: '19px',
-                      marginBottom: '18px',
-                      boxShadow: '0 8px 22px rgba(60, 36, 72, 0.05)',
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '14px',
-                        marginBottom: '16px',
-                        flexWrap: 'wrap',
-                      }}
-                    >
-                      <div>
+                  <PointSummary records={registrosPontoFiltrados.map(item => item.registro)} date={dataPontoFiltro} canEdit={podeEditar}
+                    onTerminal={() => { novoRegistroTotem(); setModoAcesso('totem') }} />
+                  <div className="filter-panel"><div className="filter-header">
+                  <div>
                         <strong
                           style={{
                             display: 'block',
@@ -14180,7 +11832,7 @@ Essa ação não pode ser desfeita.`
                             marginBottom: '3px',
                           }}
                         >
-                          Registros de entrada
+                          Registros de entrada e saída
                         </strong>
                         <span style={{ color: '#928894', fontSize: '11px' }}>
                           Histórico operacional do ponto.
@@ -14852,7 +12504,7 @@ Essa ação não pode ser desfeita.`
                 </>
               )
             })()}
-          </>
+          </section>
         )}
 
         {tela === 'listaDiaristas' && temAcesso('listaDiaristas') && (
@@ -16616,7 +14268,7 @@ Essa ação não pode ser desfeita.`
         )}
 
         {tela === 'fechamentos' && temAcesso('fechamentos') && (
-          <>
+          <section className="module-page module-fechamentos">
             {(() => {
               const filtrados = fechamentos.filter((fechamento) => {
                 const termo = buscaFechamento.trim().toLowerCase()
@@ -16889,7 +14541,7 @@ Essa ação não pode ser desfeita.`
                           boxShadow: '0 9px 26px rgba(60,36,72,.045)',
                         }}
                       >
-                        <table
+                        <table className="closing-sheet"
                           style={{
                             width: '100%',
                             minWidth: `${470 + diasPeriodo.length * 62}px`,
@@ -17006,6 +14658,8 @@ Essa ação não pode ser desfeita.`
                               const itensFuncionario = diarias.filter(
                                 (diaria) =>
                                   diaria.nome === item.nome &&
+                                  diaria.status === 'Aprovada' &&
+                                  (!selecionado.dailyRecordIds || (!!diaria.id && selecionado.dailyRecordIds.includes(diaria.id))) &&
                                   diasPeriodo.some(
                                     (data) =>
                                       data.toLocaleDateString('pt-BR') ===
@@ -17042,9 +14696,8 @@ Essa ação não pode ser desfeita.`
                                   {diasPeriodo.map((data) => {
                                     const dataBR =
                                       data.toLocaleDateString('pt-BR')
-                                    const diaria = itensFuncionario.find(
-                                      (registro) => registro.data === dataBR
-                                    )
+                                    const registrosDia = itensFuncionario.filter((registro) => registro.data === dataBR)
+                                    const diaria = registrosDia.length ? { valor: registrosDia.reduce((total, registro) => total + registro.valor, 0) } : undefined
                                     const feriado = feriadoDaData(data)
                                     const domingo = data.getDay() === 0
                                     const sabado = data.getDay() === 6
@@ -17434,11 +15087,11 @@ Essa ação não pode ser desfeita.`
                 </>
               )
             })()}
-          </>
+          </section>
         )}
 
         {tela === 'pagamentos' && temAcesso('pagamentos') && (
-          <>
+          <section className="module-page module-pagamentos">
             <div className="page-header">
               <div>
                 <span className="section-label">FINANCEIRO</span>
@@ -17501,6 +15154,7 @@ Essa ação não pode ser desfeita.`
               </div>
             </div>
 
+            <LivePixPanel items={centralPixAtual} period={periodoPixAtual} onOpen={setPagamentoPixSelecionado} />
             <div className="filter-panel">
               <div className="filter-header">
                 <div>
@@ -17690,7 +15344,7 @@ Essa ação não pode ser desfeita.`
                 )}
               </div>
             </div>
-          </>
+          </section>
         )}
 
         {tela === 'documentos' && temAcesso('documentos') && (
@@ -18007,7 +15661,7 @@ Essa ação não pode ser desfeita.`
         )}
 
         {tela === 'relatorios' && temAcesso('relatorios') && (
-          <>
+          <section className="module-page module-relatorios">
             <div className="page-header">
               <div>
                 <h1 className="page-title">Relatórios</h1>
@@ -18091,11 +15745,11 @@ Essa ação não pode ser desfeita.`
                 </div>
               </div>
             </div>
-          </>
+          </section>
         )}
 
         {tela === 'calendario' && temAcesso('calendario') && (
-          <>
+          <section className="module-page module-calendario">
             {(() => {
               const ano = mesCalendario.getFullYear()
               const mes = mesCalendario.getMonth()
@@ -18483,7 +16137,7 @@ Essa ação não pode ser desfeita.`
 
                           return (
                             <div
-                              key={iso}
+                              key={iso} className={`calendar-day ${hoje ? 'is-today' : ''} ${feriado ? 'is-holiday' : ''}`} title={feriado?.nome}
                               style={{
                                 minHeight: '76px',
                                 borderRadius: '12px',
@@ -18878,7 +16532,7 @@ Essa ação não pode ser desfeita.`
                 </>
               )
             })()}
-          </>
+          </section>
         )}
 
         {tela === 'auditoria' && temAcesso('auditoria') && (
@@ -20709,7 +18363,7 @@ Essa ação não pode ser desfeita.`
       )}
 
       </main>
-    </div>
+    </AdminShell>
   )
 }
 
