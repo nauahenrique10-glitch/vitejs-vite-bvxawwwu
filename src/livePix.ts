@@ -15,7 +15,7 @@ export function calculateLivePix(workers: Worker[], daily: Daily[], payments: Pa
       ? Boolean(worker.id && item.employeeId === worker.id)
       : item.nome === worker.nome && workers.filter(other => other.nome === item.nome).length === 1
     const approved = daily.filter(item => item.status === 'Aprovada' && sameWorker(item) && isoDate(item.data) >= start && isoDate(item.data) <= end)
-    if (!approved.length) return []
+
     const paid = payments.filter(item => item.periodo === period && sameWorker(item))
     const approvedCents = approved.reduce((sum, item) => sum + cents(item.valor), 0)
     const paidCents = paid.filter(item => item.status === 'Pago').reduce((sum, item) => sum + cents(item.valorTotal), 0)
