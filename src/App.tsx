@@ -1,3 +1,4 @@
+import { gerarPayloadPixEstatico, normalizarChavePix } from './pixPayload'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import AccessHome from './AccessHome'
@@ -7,6 +8,8 @@ import Overview from './Overview'
 import ManagementOverview from './ManagementOverview'
 import './Product.css'
 import './ModulePolish.css'
+import './Premium.css'
+import PeriodReports from './PeriodReports'
 import PointSummary from './PointSummary'
 import LivePixPanel from './LivePixPanel'
 import { calculateLivePix } from './livePix'
@@ -445,105 +448,6 @@ function funcionarioDoSupabase(registro: FuncionarioSupabase): Funcionario {
 }
 
 
-function normalizarTextoPix(valor: string, limite: number) {
-  return String(valor || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^A-Za-z0-9 $%*+\-./:]/g, '')
-    .trim()
-    .toUpperCase()
-    .slice(0, limite)
-}
-
-function normalizarChavePix(tipo: string, chave: string) {
-  const valor = String(chave || '').trim()
-  const tipoNormalizado = String(tipo || '').toLowerCase()
-
-  if (tipoNormalizado.includes('cpf') || tipoNormalizado.includes('cnpj')) {
-    return somenteDigitos(valor)
-  }
-
-  if (tipoNormalizado.includes('celular') || tipoNormalizado.includes('telefone')) {
-    if (valor.startsWith('+')) return `+${somenteDigitos(valor)}`
-    const digitos = somenteDigitos(valor)
-    if (digitos.length === 10 || digitos.length === 11) return `+55${digitos}`
-    if (digitos.startsWith('55')) return `+${digitos}`
-    return valor
-  }
-
-  return valor
-}
-
-function campoEmv(id: string, valor: string) {
-  const tamanho = String(valor.length).padStart(2, '0')
-  return `${id}${tamanho}${valor}`
-}
-
-function crc16Pix(valor: string) {
-  let crc = 0xffff
-
-  for (let i = 0; i < valor.length; i++) {
-    crc ^= valor.charCodeAt(i) << 8
-
-    for (let bit = 0; bit < 8; bit++) {
-      crc = (crc & 0x8000) !== 0 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff
-    }
-  }
-
-  return crc.toString(16).toUpperCase().padStart(4, '0')
-}
-
-function gerarPayloadPixEstatico({
-  chave,
-  tipoChave,
-  titular,
-  cidade,
-  valor,
-}: {
-  chave: string
-  tipoChave: string
-  titular: string
-  cidade: string
-  valor: number
-}) {
-  const chaveNormalizada = normalizarChavePix(tipoChave, chave)
-  const titularNormalizado = normalizarTextoPix(titular, 25)
-  const cidadeNormalizada = normalizarTextoPix(cidade, 15)
-  const valorNumerico = Number(valor)
-
-  if (!chaveNormalizada || chaveNormalizada === '-') {
-    throw new Error('Cadastre uma chave PIX válida para este funcionário.')
-  }
-
-  if (!titularNormalizado) {
-    throw new Error('Cadastre o titular do PIX para este funcionário.')
-  }
-
-  if (!cidadeNormalizada) {
-    throw new Error('Cadastre a cidade do titular do PIX para gerar o QR Code.')
-  }
-
-  if (!Number.isFinite(valorNumerico) || valorNumerico <= 0) {
-    throw new Error('O pagamento precisa ter um valor maior que zero.')
-  }
-
-  const contaPix = campoEmv('00', 'BR.GOV.BCB.PIX') + campoEmv('01', chaveNormalizada)
-
-  const payloadSemCrc =
-    campoEmv('00', '01') +
-    campoEmv('26', contaPix) +
-    campoEmv('52', '0000') +
-    campoEmv('53', '986') +
-    campoEmv('54', valorNumerico.toFixed(2)) +
-    campoEmv('58', 'BR') +
-    campoEmv('59', titularNormalizado) +
-    campoEmv('60', cidadeNormalizada) +
-    campoEmv('62', campoEmv('05', '***')) +
-    '6304'
-
-  return payloadSemCrc + crc16Pix(payloadSemCrc)
-}
-
 function App() {
   const [tela, setTela] = useState<Tela>('dashboard')
   const [ambiente, setAmbiente] = useState<'gestao' | 'acesso'>('gestao')
@@ -728,7 +632,7 @@ function App() {
     return `${ano}-${mes}-${dia}`
   })()
 
-  const [dataPontoFiltro, setDataPontoFiltro] = useState(dataLocalHoje)
+  const [dataPontoFiltro, setDataPontoFiltro] = useState('')
   const [dataOperacao, setDataOperacao] = useState(dataLocalHoje)
 
   const [buscaHistoricoOperacional, setBuscaHistoricoOperacional] = useState('')
@@ -2278,6 +2182,15 @@ function App() {
     } catch (error) {
       mostrarNotificacao(`Não foi possível exportar o fechamento: ${error instanceof Error ? error.message : 'erro ao gerar planilha'}`, 'error')
     }
+  }
+  async function exportarFechamentoPDF(fechamento: Fechamento) {
+    try {
+      const { buildClosingPDF } = await import('./pdfExport')
+      const dates = datasDoPeriodo(fechamento.periodo)
+      if (!dates.length) { mostrarNotificacao('Período inválido.', 'warning'); return }
+      buildClosingPDF({ ...fechamento, dates, records: diarias }).save(`fechamento-${nomeArquivoSeguro(fechamento.periodo)}.pdf`)
+      mostrarNotificacao('PDF do fechamento exportado.', 'success')
+    } catch (error) { mostrarNotificacao(error instanceof Error ? error.message : 'Não foi possível exportar o PDF.', 'error') }
   }
   function pagamentosDoFechamento(periodo: string) {
     return pagamentos.filter((pagamento) => pagamento.periodo === periodo)
@@ -4400,7 +4313,7 @@ Essa ação não pode ser desfeita.`
   }
 
   async function ajustarTurnoBase(registro: RegistroPonto) {
-    if (usuarioLogado?.perfil === 'Consulta') {
+    if (usuarioLogado?.perfil !== 'Administrador') {
       mostrarNotificacao(
         'Seu perfil não possui permissão para ajustar o turno base.',
         'error'
@@ -5664,66 +5577,6 @@ Essa ação não pode ser desfeita.`
     mostrarNotificacao('Documento arquivado com sucesso.', 'success')
   }
 
-  function escaparHtml(valor: unknown) {
-    return String(valor ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#039;')
-  }
-
-  function exportarPDF() {
-    const janela = window.open('', '_blank', 'width=1000,height=760')
-    if (!janela) {
-      mostrarNotificacao('O navegador bloqueou a janela do relatório. Libere pop-ups e tente novamente.', 'warning')
-      return
-    }
-
-    const totalDiarias = diarias.reduce((soma, item) => soma + item.valor, 0)
-    const pagos = pagamentos.filter((item) => item.status === 'Pago')
-    const totalPago = pagos.reduce((soma, item) => soma + item.valorTotal, 0)
-    const linhas = diarias
-      .slice()
-      .sort((a, b) => a.nome.localeCompare(b.nome))
-      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.data)}</td><td>${escaparHtml(item.tipoDia)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(moeda(item.valor))}</td></tr>`)
-      .join('')
-
-    janela.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório - Gestão de Diaristas</title><style>body{font-family:Arial,sans-serif;color:#2f2732;padding:28px}h1{margin:0 0 6px;color:#54266c}p{color:#6f6572}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0}.card{border:1px solid #ddd4e1;border-radius:12px;padding:12px}.card span{font-size:11px;color:#777}.card strong{display:block;font-size:18px;margin-top:6px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:8px;border-bottom:1px solid #e9e4ec;text-align:left}th{background:#f3edf6;color:#5b2c70}@media print{button{display:none}body{padding:0}}</style></head><body><h1>Gestão de Diaristas</h1><p>Sindicato • Operação DHL Mogi Mirim</p><div class="cards"><div class="card"><span>Funcionários ativos</span><strong>${funcionarios.filter((f) => f.status === 'Ativo').length}</strong></div><div class="card"><span>Registros de ponto</span><strong>${registrosPonto.filter((p) => p.status === 'Registrado').length}</strong></div><div class="card"><span>Valor em diárias</span><strong>${escaparHtml(moeda(totalDiarias))}</strong></div><div class="card"><span>Pagamentos realizados</span><strong>${escaparHtml(moeda(totalPago))}</strong></div></div><h2>Diárias</h2><table><thead><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Status</th><th>Total</th></tr></thead><tbody>${linhas || '<tr><td colspan="5">Nenhuma diária cadastrada.</td></tr>'}</tbody></table><script>window.onload=()=>{window.print()}</script></body></html>`)
-    janela.document.close()
-
-    registrarAuditoria('Relatório preparado para PDF', 'Relatórios', 'Relatório geral aberto para impressão/salvamento em PDF.', 'Informação')
-    mostrarNotificacao('Relatório aberto. Escolha “Salvar como PDF” na impressão.', 'success')
-  }
-
-  function exportarExcel() {
-    const linhasFuncionarios = funcionarios
-      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.cpf)}</td><td>${escaparHtml(item.funcao)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(item.chavePix)}</td></tr>`)
-      .join('')
-    const linhasDiarias = diarias
-      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.data)}</td><td>${escaparHtml(item.tipoDia)}</td><td>${item.diariaBase.toFixed(2)}</td><td>${item.adicional.toFixed(2)}</td><td>${item.vt.toFixed(2)}</td><td>${item.vr.toFixed(2)}</td><td>${item.valor.toFixed(2)}</td><td>${escaparHtml(item.status)}</td></tr>`)
-      .join('')
-    const linhasPagamentos = pagamentos
-      .map((item) => `<tr><td>${escaparHtml(item.nome)}</td><td>${escaparHtml(item.periodo)}</td><td>${item.quantidadeDiarias}</td><td>${item.valorTotal.toFixed(2)}</td><td>${escaparHtml(item.status)}</td><td>${escaparHtml(item.dataPagamento)}</td></tr>`)
-      .join('')
-
-    const html = `<!doctype html><html><head><meta charset="utf-8"></head><body><h2>Funcionários</h2><table border="1"><tr><th>Nome</th><th>CPF</th><th>Função</th><th>Status</th><th>PIX</th></tr>${linhasFuncionarios}</table><br><h2>Diárias</h2><table border="1"><tr><th>Funcionário</th><th>Data</th><th>Tipo</th><th>Base</th><th>Adicional</th><th>VT</th><th>VR</th><th>Total</th><th>Status</th></tr>${linhasDiarias}</table><br><h2>Pagamentos</h2><table border="1"><tr><th>Funcionário</th><th>Período</th><th>Diárias</th><th>Total</th><th>Status</th><th>Data pagamento</th></tr>${linhasPagamentos}</table></body></html>`
-
-    const blob = new Blob(['\ufeff', html], { type: 'application/vnd.ms-excel;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    const hoje = new Date().toISOString().slice(0, 10)
-    link.href = url
-    link.download = `relatorio-sindicato-${hoje}.xls`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
-
-    registrarAuditoria('Relatório Excel exportado', 'Relatórios', 'Relatório geral exportado em formato compatível com Excel.', 'Informação')
-    mostrarNotificacao('Relatório Excel exportado com sucesso.', 'success')
-  }
-
   async function salvarConfiguracoes() {
     if (!podeAdministrar) {
       mostrarNotificacao(
@@ -6186,9 +6039,6 @@ Essa ação não pode ser desfeita.`
     setMensagemErroTotem('')
   }
 
-  const totalRegistrados = registrosPonto.filter(
-    (registro) => registro.status === 'Registrado'
-  ).length
 
   const totalPendentes = registrosPonto.filter(
     (registro) => registro.status === 'Pendente'
@@ -6339,6 +6189,7 @@ Essa ação não pode ser desfeita.`
           titular,
           cidade,
           valor: pagamentoPixExibido.valorTotal,
+          permitirSemValor: Boolean(pagamentoPixExibido.previsaoKey),
         })
 
         const dataUrl = await QRCode.toDataURL(payload, {
@@ -7855,7 +7706,7 @@ Essa ação não pode ser desfeita.`
                 <strong>Escaneie para pagamento</strong>
 
                 <small>
-                  QR Code PIX estático com o valor exato deste pagamento. Confira os dados no aplicativo do banco antes de concluir.
+                  {pagamentoPixExibido.previsaoKey && pagamentoPixExibido.valorTotal === 0 ? 'QR Code sem valor definido. Informe o valor no aplicativo do banco.' : 'QR Code com o saldo exibido. Confira os dados no aplicativo do banco antes de concluir.'}
                 </small>
 
                 {pixCopiaCola && identificadorQrGerado === identificadorQrAtual && (
@@ -10341,7 +10192,7 @@ Essa ação não pode ser desfeita.`
                         FICHA DO TRABALHADOR
                       </span>
 
-                      <button
+                      <button aria-label="Fechar ficha do trabalhador"
                         onClick={() => {
                           setFuncionarioSelecionado(null)
                           cancelarEdicaoFuncionario()
@@ -10391,7 +10242,7 @@ Essa ação não pode ser desfeita.`
                           .join('')}
                       </div>
 
-                      <div style={{ flex: 1, minWidth: '220px' }}>
+                      <div className="worker-profile-identity" style={{ flex: 1, minWidth: 0 }}>
                         <h2
                           style={{
                             margin: 0,
@@ -10545,7 +10396,7 @@ Essa ação não pode ser desfeita.`
                   </div>
 
                   {editandoFuncionario && funcionarioEmEdicao && (
-                    <div
+                    <div className="worker-profile-edit"
                       style={{
                         margin: '20px 22px 0',
                         padding: '22px',
@@ -10827,7 +10678,7 @@ Essa ação não pode ser desfeita.`
                     </div>
                   )}
 
-                  <div
+                  <div className="worker-profile-grid"
                     style={{
                       padding: '18px 22px 0',
                       display: 'grid',
@@ -10933,9 +10784,9 @@ Essa ação não pode ser desfeita.`
                     ))}
                   </div>
 
-                  <div style={{ padding: '22px' }}>
+                  <div className="worker-profile-body" style={{ padding: '22px' }}>
                     {abaFichaFuncionario === 'resumo' && (
-                      <div
+                      <div className="worker-profile-grid"
                         style={{
                           display: 'grid',
                           gridTemplateColumns:
@@ -10954,7 +10805,7 @@ Essa ação não pode ser desfeita.`
                             Dados pessoais
                           </h3>
 
-                          <div
+                          <div className="worker-profile-grid"
                             style={{
                               display: 'grid',
                               gridTemplateColumns:
@@ -11017,7 +10868,7 @@ Essa ação não pode ser desfeita.`
                             Dados profissionais
                           </h3>
 
-                          <div
+                          <div className="worker-profile-grid"
                             style={{
                               display: 'grid',
                               gridTemplateColumns: '1fr 1fr',
@@ -11099,7 +10950,7 @@ Essa ação não pode ser desfeita.`
                             </span>
                           </div>
 
-                          <div
+                          <div className="worker-profile-grid"
                             style={{
                               display: 'grid',
                               gridTemplateColumns:
@@ -11240,7 +11091,7 @@ Essa ação não pode ser desfeita.`
                         <div style={estiloCard}>
                           <span style={estiloLabel}>ATALHOS</span>
 
-                          <div
+                          <div className="worker-profile-grid"
                             style={{
                               display: 'grid',
                               gridTemplateColumns: '1fr 1fr',
@@ -11549,7 +11400,7 @@ Essa ação não pode ser desfeita.`
                           </button>
                         </div>
 
-                        <div
+                        <div className="worker-profile-grid"
                           style={{
                             display: 'grid',
                             gridTemplateColumns:
@@ -11980,7 +11831,7 @@ Essa ação não pode ser desfeita.`
                                       >
                                         Ajustar {registro.tipoRegistro || 'Entrada'}
                                       </button>
-                                      {podeEditar && (
+                                      {usuarioLogado?.perfil === 'Administrador' && (
                                         <button
                                           className="action-button"
                                           onClick={() => void ajustarTurnoBase(registro)}
@@ -14479,6 +14330,12 @@ Essa ação não pode ser desfeita.`
 
                   {selecionado && resumo ? (
                     <>
+                      <div className="closing-export-actions closing-sheet-actions">
+                        <span>Trabalhadores nas linhas · dias da quinzena nas colunas</span>
+                        <button className="secondary-button" onClick={() => void exportarFechamentoExcel(selecionado)}>Exportar Excel</button>
+                        <button className="primary-button" onClick={() => void exportarFechamentoPDF(selecionado)}>Exportar PDF</button>
+                      </div>
+                      <section className="closing-spreadsheet" aria-label="Planilha do fechamento">
                       <div
                         style={{
                           background:
@@ -14868,6 +14725,7 @@ Essa ação não pode ser desfeita.`
                           </tfoot>
                         </table>
                       </div>
+                      </section>
 
                       <div
                         style={{
@@ -15154,7 +15012,7 @@ Essa ação não pode ser desfeita.`
               </div>
             </div>
 
-            <LivePixPanel items={centralPixAtual} period={periodoPixAtual} onOpen={setPagamentoPixSelecionado} />
+            <LivePixPanel items={centralPixAtual} period={periodoPixAtual} onOpen={setPagamentoPixSelecionado} onCopy={copiarChavePix} onEdit={temAcesso('funcionarios') ? item => { const worker = funcionarios.find(f => item.employeeId ? f.id === item.employeeId : f.nome === item.nome); if (worker) { setFuncionarioSelecionado(worker); setAbaFichaFuncionario('resumo'); setTela('funcionarios') } } : undefined} />
             <div className="filter-panel">
               <div className="filter-header">
                 <div>
@@ -15661,91 +15519,7 @@ Essa ação não pode ser desfeita.`
         )}
 
         {tela === 'relatorios' && temAcesso('relatorios') && (
-          <section className="module-page module-relatorios">
-            <div className="page-header">
-              <div>
-                <h1 className="page-title">Relatórios</h1>
-
-                <p className="page-subtitle">
-                  Dados operacionais e financeiros.
-                </p>
-              </div>
-
-              <div className="report-actions">
-                <button className="secondary-button" onClick={exportarExcel}>
-                  Exportar Excel
-                </button>
-
-                <button className="primary-button" onClick={exportarPDF}>
-                  Exportar PDF
-                </button>
-              </div>
-            </div>
-
-            <div className="cards relatorio-cards">
-              <div className="card">
-                <span>Funcionários ativos</span>
-                <strong>{funcionariosAtivos}</strong>
-              </div>
-
-              <div className="card">
-                <span>Pontos registrados</span>
-                <strong>{totalRegistrados}</strong>
-              </div>
-
-              <div className="card">
-                <span>Diárias aprovadas</span>
-                <strong>{totalDiariasAprovadas}</strong>
-              </div>
-
-              <div className="card">
-                <span>Total pago</span>
-                <strong>{moeda(valorTotalPago)}</strong>
-              </div>
-            </div>
-
-            <div className="report-grid">
-              <div className="panel">
-                <h2>Resumo operacional</h2>
-
-                <div className="report-row">
-                  <span>Funcionários cadastrados</span>
-                  <strong>{funcionarios.length}</strong>
-                </div>
-
-                <div className="report-row">
-                  <span>Pontos registrados</span>
-                  <strong>{totalRegistrados}</strong>
-                </div>
-
-                <div className="report-row">
-                  <span>Diárias aprovadas</span>
-                  <strong>{totalDiariasAprovadas}</strong>
-                </div>
-              </div>
-
-              <div className="panel">
-                <h2>Resumo financeiro</h2>
-
-                <div className="report-row">
-                  <span>Pagamentos pendentes</span>
-                  <strong>{pagamentosPendentes}</strong>
-                </div>
-
-                <div className="report-row">
-                  <span>Pagamentos concluídos</span>
-                  <strong>{pagamentosPagos}</strong>
-                </div>
-
-                <div className="report-row">
-                  <span>Valor pago</span>
-                  <strong className="report-success">
-                    {moeda(valorTotalPago)}
-                  </strong>
-                </div>
-              </div>
-            </div>
-          </section>
+          <PeriodReports points={registrosPonto} daily={diarias} payments={pagamentos} onError={message => mostrarNotificacao(message, 'error')} />
         )}
 
         {tela === 'calendario' && temAcesso('calendario') && (

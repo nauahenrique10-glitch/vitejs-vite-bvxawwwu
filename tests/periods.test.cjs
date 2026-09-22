@@ -1,0 +1,33 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const ts = require('typescript')
+const React = require('react')
+const { renderToStaticMarkup } = require('react-dom/server')
+for(const ext of ['.ts','.tsx']) require.extensions[ext] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,filename)
+require.extensions['.css'] = () => {}
+const { inReportPeriod } = require('../src/PeriodReports.tsx')
+const LivePixPanel = require('../src/LivePixPanel.tsx').default
+const { calculateLivePix } = require('../src/livePix.ts')
+test('reports distinguish months and the two halves, including payment timestamps',()=>{
+  assert.equal(inReportPeriod('15/09/2026','2026-09','primeira'),true)
+  assert.equal(inReportPeriod('16/09/2026','2026-09','primeira'),false)
+  assert.equal(inReportPeriod('30/09/2026 14:00','2026-09','segunda'),true)
+  assert.equal(inReportPeriod('01/10/2026','2026-09','mes'),false)
+  assert.equal(inReportPeriod('-','2026-09','mes'),false)
+})
+test('directory renders an available QR and copy action for a worker without daily records',()=>{
+  const items=calculateLivePix([{id:'a',nome:'Ana',funcao:'Operadora',chavePix:'ana@example.com',titularPix:'Ana',cidadePix:'Mogi Mirim'}],[],[],'p','2026-09-01','2026-09-15')
+  const html=renderToStaticMarkup(React.createElement(LivePixPanel,{items,period:'p',onOpen:()=>{},onCopy:()=>{}}))
+  assert.ok(html.includes('Sem diárias aprovadas'))
+  assert.ok(html.includes('QR sem valor definido'))
+  assert.ok(html.includes('ana@example.com'))
+  assert.ok(!html.includes('disabled=""'))
+})
+test('directory identifies missing PIX data and offers the worker record action',()=>{
+  const items=calculateLivePix([{id:'a',nome:'Ana',funcao:'Operadora',chavePix:'',titularPix:'Ana',cidadePix:''}],[],[],'p','2026-09-01','2026-09-15')
+  const html=renderToStaticMarkup(React.createElement(LivePixPanel,{items,period:'p',onOpen:()=>{},onCopy:()=>{},onEdit:()=>{}}))
+  assert.ok(html.includes('Cadastrar PIX'))
+  assert.ok(html.includes('Completar dados PIX'))
+  assert.ok(html.includes('disabled=""'))
+})

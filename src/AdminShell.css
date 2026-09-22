@@ -116,6 +116,13 @@
 .system-app .content [style*='grid-template-columns'] > * { min-width: 0; }
 .system-app .content [style*='grid-template-columns: repeat(7,'] { min-width: 490px; }
 .system-app .content div:has(> [style*='grid-template-columns: repeat(7,']) { overflow-x: auto; }
+@media screen and (min-width: 901px) {
+  .system-app { --sidebar-width: 248px; padding-left: var(--sidebar-width); box-sizing: border-box; }
+  .system-app > .system-sidebar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); height: 100dvh; box-sizing: border-box; z-index: 40; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; }
+}
+@media screen and (min-width: 901px) and (max-width: 1200px) {
+  .system-app { --sidebar-width: 225px; }
+}
 @media (max-width: 1200px) {
   .system-sidebar { width: 225px; flex-basis: 225px; padding-left: 12px; padding-right: 12px; }
   .system-app .content { padding: 26px 24px; }
